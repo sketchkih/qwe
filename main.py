@@ -18,6 +18,7 @@ import time
 import asyncio
 from threading import Thread
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     from aiogram import Bot, Dispatcher, types, F
@@ -52,6 +53,7 @@ user_states = {}
 ADMIN_IDS = [7040106327]
 REQUIRED_CHANNELS = []
 active_bots = {}
+mirror_tasks = {}
 DB_FILE = "bot_database.db"
 
 # ========== FSM STATES ==========
@@ -277,9 +279,14 @@ def remove_mirror_bot(bot_token: str):
         cursor.execute('UPDATE mirror_bots SET is_active = 0 WHERE bot_token = ?', (bot_token,))
         conn.commit()
         conn.close()
+        
+        # Остановка зеркала
+        if bot_token in mirror_tasks:
+            mirror_tasks[bot_token].cancel()
+            del mirror_tasks[bot_token]
         if bot_token in active_bots:
-            active_bots[bot_token]['running'] = False
             del active_bots[bot_token]
+        
         return True
     except Exception as e:
         logger.error(f"Ошибка удаления зеркала: {e}")
@@ -381,6 +388,10 @@ def create_tools_keyboard():
          InlineKeyboardButton(text="🔒 Хеш MD5/SHA", callback_data="tool_hash")],
         [InlineKeyboardButton(text="📧 Email валидация", callback_data="tool_email"),
          InlineKeyboardButton(text="📱 Телефон инфо", callback_data="tool_phone")],
+        [InlineKeyboardButton(text="🌍 IP Geolocation", callback_data="tool_ip_geo"),
+         InlineKeyboardButton(text="🔍 Port Scanner", callback_data="tool_port_scan")],
+        [InlineKeyboardButton(text="📸 Screenshot", callback_data="tool_screenshot"),
+         InlineKeyboardButton(text="🔐 SSL Info", callback_data="tool_ssl")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
     ])
 
@@ -540,7 +551,6 @@ def validate_email(email: str) -> str:
 def analyze_phone(phone: str) -> str:
     """Анализ телефонного номера"""
     try:
-        # Очистка номера
         clean_phone = re.sub(r'[^\d+]', '', phone)
         
         result = [
@@ -549,7 +559,6 @@ def analyze_phone(phone: str) -> str:
             f"<b>Длина:</b> {len(clean_phone)} символов"
         ]
         
-        # Определение страны по коду
         country_codes = {
             '+7': '🇷🇺 Россия/Казахстан',
             '+1': '🇺🇸 США/Канада',
@@ -569,6 +578,76 @@ def analyze_phone(phone: str) -> str:
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
+def get_ip_geolocation(ip: str) -> str:
+    """IP Geolocation"""
+    try:
+        response = requests.get(f"http://ip-api.com/json/{ip}", timeout=10).json()
+        if response.get('status') == 'success':
+            result = [
+                "🌍 <b>IP Geolocation:</b>\n",
+                f"<b>IP:</b> <code>{ip}</code>",
+                f"<b>Страна:</b> {response.get('country')} {response.get('countryCode')}",
+                f"<b>Регион:</b> {response.get('regionName')}",
+                f"<b>Город:</b> {response.get('city')}",
+                f"<b>ISP:</b> {response.get('isp')}",
+                f"<b>Организация:</b> {response.get('org')}",
+                f"<b>Координаты:</b> {response.get('lat')}, {response.get('lon')}"
+            ]
+            return "\n".join(result)
+        return "❌ Информация не найдена"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+def scan_ports(host: str, ports: str = "21,22,23,25,80,443,3306,3389,8080") -> str:
+    """Простой сканер портов"""
+    try:
+        host = host.replace('http://', '').replace('https://', '').split('/')[0]
+        port_list = [int(p.strip()) for p in ports.split(',')]
+        
+        result = [f"🔍 <b>Сканирование портов: {host}</b>\n"]
+        open_ports = []
+        
+        for port in port_list[:10]:  # Ограничение 10 портов
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            if sock.connect_ex((host, port)) == 0:
+                open_ports.append(port)
+            sock.close()
+        
+        if open_ports:
+            result.append("<b>Открытые порты:</b>")
+            for port in open_ports:
+                result.append(f"✅ <code>{port}</code>")
+        else:
+            result.append("❌ Открытые порты не найдены")
+        
+        return "\n".join(result)
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+def get_ssl_info(domain: str) -> str:
+    """Информация о SSL сертификате"""
+    try:
+        import ssl
+        domain = domain.replace('http://', '').replace('https://', '').split('/')[0]
+        
+        context = ssl.create_default_context()
+        with socket.create_connection((domain, 443), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=domain) as ssock:
+                cert = ssock.getpeercert()
+        
+        result = [
+            f"🔐 <b>SSL сертификат: {domain}</b>\n",
+            f"<b>Издатель:</b> {dict(x[0] for x in cert['issuer']).get('organizationName', 'N/A')}",
+            f"<b>Владелец:</b> {dict(x[0] for x in cert['subject']).get('commonName', 'N/A')}",
+            f"<b>Действителен с:</b> {cert.get('notBefore', 'N/A')}",
+            f"<b>Действителен до:</b> {cert.get('notAfter', 'N/A')}",
+            f"<b>Версия:</b> {cert.get('version', 'N/A')}"
+        ]
+        return "\n".join(result)
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
 # ========== DORKING ФУНКЦИИ ==========
 
 def dorking_search(query: str, search_type: str) -> str:
@@ -581,7 +660,6 @@ def dorking_search(query: str, search_type: str) -> str:
             'duckduckgo': f"https://duckduckgo.com/?q={quote(query)}"
         }
         
-        # Формирование запросов в зависимости от типа
         dork_queries = []
         
         if search_type == "username":
@@ -623,7 +701,7 @@ def dorking_search(query: str, search_type: str) -> str:
                 f'site:{query} intext:"password"',
                 f'related:{query}'
             ]
-        else:  # universal
+        else:
             dork_queries = [f'"{query}"']
         
         result = [
@@ -650,44 +728,10 @@ def dorking_search(query: str, search_type: str) -> str:
         logger.error(f"Ошибка dorking: {e}")
         return f"❌ Ошибка: {str(e)}"
 
-def advanced_username_search(username: str) -> str:
-    """Расширенный поиск по никнейму"""
-    try:
-        social_networks = {
-            'VK': f'https://vk.com/{username}',
-            'Instagram': f'https://instagram.com/{username}',
-            'Twitter': f'https://twitter.com/{username}',
-            'GitHub': f'https://github.com/{username}',
-            'Telegram': f'https://t.me/{username}',
-            'YouTube': f'https://youtube.com/@{username}',
-            'TikTok': f'https://tiktok.com/@{username}',
-            'Reddit': f'https://reddit.com/user/{username}',
-            'LinkedIn': f'https://linkedin.com/in/{username}',
-            'Facebook': f'https://facebook.com/{username}'
-        }
-        
-        result = [
-            f"👤 <b>Поиск профилей: {username}</b>\n",
-            "<b>🔗 Проверьте профили:</b>\n"
-        ]
-        
-        for platform, url in social_networks.items():
-            result.append(f"• <a href='{url}'>{platform}</a>")
-        
-        # Добавляем Google Dorking
-        google_dork = quote(f'"{username}" (site:vk.com OR site:instagram.com OR site:twitter.com OR site:github.com)')
-        result.append(f"\n<b>🔍 Google поиск:</b>")
-        result.append(f"<a href='https://www.google.com/search?q={google_dork}'>Искать везде</a>")
-        
-        return "\n".join(result)
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
-
-# ========== OSINT ФУНКЦИИ (улучшенные) ==========
+# ========== OSINT ФУНКЦИИ ==========
 
 def perform_whois(domain: str) -> str:
     try:
-        # Очистка домена
         domain = domain.replace('http://', '').replace('https://', '').replace('www.', '').split('/')[0]
         
         w = whois.whois(domain)
@@ -708,7 +752,6 @@ def perform_whois(domain: str) -> str:
             ns_list = w.name_servers if isinstance(w.name_servers, list) else [w.name_servers]
             info.append(f"<b>NS серверы:</b>\n" + "\n".join(f"• {ns}" for ns in ns_list[:5]))
         
-        # Получение IP
         try:
             ip = socket.gethostbyname(domain)
             info.append(f"<b>IP адрес:</b> <code>{ip}</code>")
@@ -844,14 +887,12 @@ def search_site_content(url: str) -> str:
         resp = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # Удаление скриптов и стилей
         for script in soup(["script", "style"]):
             script.decompose()
         
         text = soup.get_text()
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         
-        # Извлечение метаданных
         title = soup.find('title')
         description = soup.find('meta', attrs={'name': 'description'})
         
@@ -895,35 +936,20 @@ def analyze_server_software(url: str) -> str:
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
-# ========== ЗЕРКАЛА (без изменений, но с улучшенной обработкой) ==========
-
-def create_mirror_bot_instance(bot_token: str, owner_id: int, bot_name: str):
-    try:
-        if add_mirror_bot(bot_token, owner_id, bot_name):
-            def run_mirror():
-                try:
-                    asyncio.run(start_mirror_bot(bot_token, owner_id, bot_name))
-                except Exception as e:
-                    logger.error(f"Ошибка потока зеркала {bot_name}: {e}")
-            
-            mirror_thread = Thread(target=run_mirror, daemon=True)
-            mirror_thread.start()
-            return True, bot_name
-        return False, "Ошибка сохранения в БД"
-    except Exception as e:
-        logger.error(f"Ошибка создания зеркала: {e}")
-        return False, str(e)
+# ========== ЗЕРКАЛА (ИСПРАВЛЕНО) ==========
 
 async def start_mirror_bot(bot_token: str, owner_id: int, bot_name: str):
+    """Запуск зеркала бота в отдельном event loop"""
     try:
         bot = Bot(token=bot_token)
+        dp = Dispatcher(storage=MemoryStorage())
+        
         active_bots[bot_token] = {
-            'bot': bot, 
-            'owner_id': owner_id, 
-            'bot_name': bot_name, 
+            'bot': bot,
+            'owner_id': owner_id,
+            'bot_name': bot_name,
             'running': True
         }
-        dp = Dispatcher(storage=MemoryStorage())
         
         @dp.message(Command("start"))
         async def mirror_start(message: types.Message):
@@ -952,7 +978,7 @@ async def start_mirror_bot(bot_token: str, owner_id: int, bot_name: str):
         
         @dp.callback_query()
         async def mirror_callback(callback: types.CallbackQuery):
-            await handle_callback_logic_mirror(callback, bot)
+            await handle_callback_logic(callback, bot, is_mirror=True)
         
         @dp.message()
         async def mirror_message(message: types.Message):
@@ -960,10 +986,42 @@ async def start_mirror_bot(bot_token: str, owner_id: int, bot_name: str):
         
         logger.info(f"✅ Запущено зеркало: {bot_name}")
         await dp.start_polling(bot, skip_updates=True)
+        
+    except asyncio.CancelledError:
+        logger.info(f"🛑 Остановлено зеркало: {bot_name}")
+        await bot.session.close()
     except Exception as e:
         logger.error(f"❌ Ошибка в зеркале {bot_name}: {e}")
         if bot_token in active_bots:
             active_bots[bot_token]['running'] = False
+
+def create_mirror_bot_instance(bot_token: str, owner_id: int, bot_name: str):
+    """Создание и запуск зеркала в отдельном потоке с новым event loop"""
+    try:
+        if add_mirror_bot(bot_token, owner_id, bot_name):
+            def run_mirror_in_thread():
+                # Создаем новый event loop для потока
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    # Создаем task для зеркала
+                    task = loop.create_task(start_mirror_bot(bot_token, owner_id, bot_name))
+                    mirror_tasks[bot_token] = task
+                    loop.run_until_complete(task)
+                except asyncio.CancelledError:
+                    logger.info(f"Зеркало {bot_name} остановлено")
+                except Exception as e:
+                    logger.error(f"Ошибка в потоке зеркала {bot_name}: {e}")
+                finally:
+                    loop.close()
+            
+            mirror_thread = Thread(target=run_mirror_in_thread, daemon=True, name=f"Mirror-{bot_name}")
+            mirror_thread.start()
+            return True, bot_name
+        return False, "Ошибка сохранения в БД"
+    except Exception as e:
+        logger.error(f"Ошибка создания зеркала: {e}")
+        return False, str(e)
 
 # ========== ОБРАБОТЧИКИ СООБЩЕНИЙ ==========
 
@@ -975,18 +1033,15 @@ async def handle_message_logic(message: types.Message, bot_instance: Bot):
     if not text:
         return
     
-    # Проверка подписки
     subscribed, not_subscribed = await check_user_subscription(bot_instance, user_id)
     if not subscribed:
         keyboard = create_subscription_keyboard(not_subscribed)
         await safe_send_message(bot_instance, user_id, "📢 Подпишитесь на каналы!", reply_markup=keyboard)
         return
     
-    # Обработка состояний
     if user_id in user_states:
         state = user_states[user_id]
         
-        # Поиск утечек
         if state.get("waiting_for") == "search_query":
             query_id = str(randint(0, 9999999))
             increment_requests(user_id)
@@ -1004,7 +1059,6 @@ async def handle_message_logic(message: types.Message, bot_instance: Bot):
             del user_states[user_id]
             return
         
-        # Инструменты
         elif "tool" in state:
             tool_name = state["tool"]
             tool_functions = {
@@ -1019,7 +1073,10 @@ async def handle_message_logic(message: types.Message, bot_instance: Bot):
                 "password": lambda x: generate_password(int(x) if x.isdigit() else 16),
                 "hash": calculate_hash,
                 "email": validate_email,
-                "phone": analyze_phone
+                "phone": analyze_phone,
+                "ip_geo": get_ip_geolocation,
+                "port_scan": lambda x: scan_ports(x.split()[0], x.split()[1] if len(x.split()) > 1 else "21,22,23,25,80,443,3306,3389,8080"),
+                "ssl": get_ssl_info
             }
             
             result = tool_functions.get(tool_name, lambda x: "❌ Ошибка")(text)
@@ -1028,7 +1085,6 @@ async def handle_message_logic(message: types.Message, bot_instance: Bot):
             await safe_send_message(bot_instance, user_id, result, reply_markup=create_back_keyboard("tools_menu"))
             return
         
-        # Dorking
         elif "dorking" in state:
             dork_type = state["dorking"]
             result = dorking_search(text, dork_type)
@@ -1037,16 +1093,11 @@ async def handle_message_logic(message: types.Message, bot_instance: Bot):
             await safe_send_message(bot_instance, user_id, result, reply_markup=create_back_keyboard("dorking_menu"))
             return
     
-    # Сообщение по умолчанию
     await safe_send_message(bot_instance, user_id, 
         "🔍 Используйте кнопки меню\n\n<b>Команды:</b>\n/start - главное меню\n/tools - инструменты\n/help - помощь", 
         reply_markup=create_back_keyboard())
 
 # ========== ОБРАБОТЧИКИ CALLBACK ==========
-
-async def handle_callback_logic_mirror(callback: types.CallbackQuery, bot_instance: Bot):
-    """Обработка callback для зеркал"""
-    await handle_callback_logic(callback, bot_instance, is_mirror=True)
 
 async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot, is_mirror: bool = False):
     """Универсальная обработка callback"""
@@ -1055,7 +1106,6 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
     chat_id = callback.message.chat.id
     data = callback.data
     
-    # Проверка подписки (исключая некоторые callback)
     no_check_callbacks = ["check_subscription", "admin_panel", "admin_stats", "admin_users", 
                           "admin_channels", "admin_mirrors", "current_page"]
     
@@ -1069,7 +1119,6 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
             return
     
     try:
-        # ===== ОСНОВНЫЕ МЕНЮ =====
         if data == "check_subscription":
             subscribed, not_subscribed = await check_user_subscription(bot_instance, user_id)
             if subscribed:
@@ -1094,7 +1143,6 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
             else:
                 await safe_send_message(bot_instance, chat_id, caption, reply_markup=create_start_keyboard())
         
-        # ===== ПОИСК УТЕЧЕК =====
         elif data == "leak_search":
             await safe_delete_message(bot_instance, chat_id, message_id)
             await safe_send_message(bot_instance, chat_id,
@@ -1108,7 +1156,6 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
                 reply_markup=create_back_keyboard())
             user_states[user_id] = {"waiting_for": "search_query"}
         
-        # ===== ИНСТРУМЕНТЫ =====
         elif data == "tools_menu":
             await safe_delete_message(bot_instance, chat_id, message_id)
             await safe_send_message(bot_instance, chat_id, 
@@ -1129,7 +1176,10 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
                 "password": ("🔐 <b>Генератор паролей</b>\n\nВведите длину (8-64):\n<i>По умолчанию: 16</i>", "password"),
                 "hash": ("🔒 <b>Хеширование</b>\n\nВведите текст для хеширования:", "hash"),
                 "email": ("📧 <b>Валидация Email</b>\n\nВведите email адрес:", "email"),
-                "phone": ("📱 <b>Анализ телефона</b>\n\nВведите номер телефона:", "phone")
+                "phone": ("📱 <b>Анализ телефона</b>\n\nВведите номер телефона:", "phone"),
+                "ip_geo": ("🌍 <b>IP Geolocation</b>\n\nВведите IP адрес:\n<i>Пример: 8.8.8.8</i>", "ip_geo"),
+                "port_scan": ("🔍 <b>Port Scanner</b>\n\nВведите хост и порты:\n<i>Пример: example.com 80,443</i>", "port_scan"),
+                "ssl": ("🔐 <b>SSL Info</b>\n\nВведите домен:\n<i>Пример: example.com</i>", "ssl")
             }
             
             if tool_name in tool_prompts:
@@ -1139,7 +1189,6 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
                 user_states[user_id] = {"tool": state_name}
             await safe_answer_callback(callback)
         
-        # ===== DORKING =====
         elif data == "dorking_menu":
             await safe_delete_message(bot_instance, chat_id, message_id)
             await safe_send_message(bot_instance, chat_id,
@@ -1166,7 +1215,6 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
                 user_states[user_id] = {"dorking": state_name}
             await safe_answer_callback(callback)
         
-        # ===== ПРОФИЛЬ =====
         elif data == "profile_menu":
             user_stats = get_user_stats(user_id)
             stats_text = "👤 <b>Ваш профиль</b>\n\n"
@@ -1192,7 +1240,6 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
             await safe_delete_message(bot_instance, chat_id, message_id)
             await safe_send_message(bot_instance, chat_id, stats_text, reply_markup=create_back_keyboard("profile_menu"))
         
-        # ===== ЗЕРКАЛА =====
         elif data == "mirrors_menu":
             if is_mirror:
                 await safe_answer_callback(callback, "Доступно только в основном боте")
@@ -1219,7 +1266,8 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
             if mirrors:
                 mirrors_text = "📋 <b>Ваши зеркала:</b>\n\n"
                 for i, mirror in enumerate(mirrors, 1):
-                    mirrors_text += f"{i}. <b>{mirror[3]}</b>\n   <i>Создан: {mirror[4]}</i>\n\n"
+                    status = "🟢 Активно" if mirror[1] in active_bots else "🔴 Остановлено"
+                    mirrors_text += f"{i}. <b>{mirror[3]}</b> {status}\n   <i>Создан: {mirror[4]}</i>\n\n"
             else:
                 mirrors_text = "📋 У вас пока нет зеркал\n\nИспользуйте /mirror для создания"
             await safe_delete_message(bot_instance, chat_id, message_id)
@@ -1262,7 +1310,6 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
                 "• Независимая работа",
                 reply_markup=create_back_keyboard("mirrors_menu"))
         
-        # ===== ПОМОЩЬ =====
         elif data == "help_menu":
             await safe_delete_message(bot_instance, chat_id, message_id)
             await safe_send_message(bot_instance, chat_id,
@@ -1275,13 +1322,12 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
                 "/help - помощь\n\n"
                 "<b>Возможности:</b>\n"
                 "🔍 Поиск утечек данных\n"
-                "🛠️ OSINT инструменты\n"
+                "🛠️ OSINT инструменты (14 инструментов)\n"
                 "🕵️ Dorking поиск\n"
                 "🤖 Создание зеркал\n\n"
                 f"🌐 <a href='{WEBSITE_URL}'>Наш сайт</a>",
                 reply_markup=create_back_keyboard())
         
-        # ===== АДМИН ПАНЕЛЬ =====
         elif data == "admin_panel":
             if not is_admin(user_id):
                 await safe_answer_callback(callback, "⛔ Нет доступа")
@@ -1304,7 +1350,7 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
                 "📊 <b>Статистика бота</b>\n\n"
                 f"👥 <b>Пользователей:</b> {len(users)}\n"
                 f"📊 <b>Запросов:</b> {total_requests}\n"
-                f"🤖 <b>Зеркал:</b> {len(mirrors)}\n"
+                f"🤖 <b>Зеркал:</b> {len(mirrors)} (активных: {len(active_bots)})\n"
                 f"📢 <b>Каналов:</b> {len(channels)}"
             )
             await safe_delete_message(bot_instance, chat_id, message_id)
@@ -1357,13 +1403,13 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
             if mirrors:
                 mirrors_text = "🤖 <b>Все зеркала:</b>\n\n"
                 for i, m in enumerate(mirrors, 1):
-                    mirrors_text += f"{i}. <b>{m[3]}</b>\n   Владелец: <code>{m[2]}</code>\n   Создан: {m[4]}\n\n"
+                    status = "🟢" if m[1] in active_bots else "🔴"
+                    mirrors_text += f"{i}. {status} <b>{m[3]}</b>\n   Владелец: <code>{m[2]}</code>\n   Создан: {m[4]}\n\n"
             else:
                 mirrors_text = "🤖 Зеркал нет"
             await safe_delete_message(bot_instance, chat_id, message_id)
             await safe_send_message(bot_instance, chat_id, mirrors_text, reply_markup=create_back_keyboard("admin_panel"))
         
-        # ===== ПАГИНАЦИЯ =====
         elif data.startswith("page_"):
             parts = data.split("_")
             query_id = parts[1]
@@ -1413,7 +1459,7 @@ async def main():
             f"🌐 {WEBSITE_URL}\n\n"
             "🔍 <b>Возможности бота:</b>\n"
             "• Поиск утечек данных\n"
-            "• OSINT инструменты\n"
+            "• 14 OSINT инструментов\n"
             "• Dorking поиск\n"
             "• Создание зеркал\n\n"
             "Выберите действие:"
@@ -1487,7 +1533,7 @@ async def main():
     @dp.message(Command("tools"))
     async def tools_command(message: types.Message):
         await safe_send_message(bot, message.chat.id, 
-            "🛠️ <b>Инструменты OSINT</b>\n\nВыберите инструмент:", 
+            "🛠️ <b>Инструменты OSINT</b>\n\n<b>Доступно 14 инструментов</b>\n\nВыберите инструмент:", 
             reply_markup=create_tools_keyboard())
     
     @dp.message(Command("profile"))
@@ -1529,14 +1575,12 @@ async def main():
         if not text:
             return
         
-        # Проверка подписки
         subscribed, not_subscribed = await check_user_subscription(bot, user_id)
         if not subscribed:
             keyboard = create_subscription_keyboard(not_subscribed)
             await safe_send_message(bot, user_id, "📢 Подпишитесь на каналы!", reply_markup=keyboard)
             return
         
-        # Добавление канала админом
         if is_admin(user_id) and "|" in text and text.count("|") == 2:
             try:
                 channel_id, channel_name, channel_url = [x.strip() for x in text.split("|")]
@@ -1553,7 +1597,6 @@ async def main():
                 await safe_send_message(bot, user_id, f"❌ Ошибка: {str(e)}")
                 return
         
-        # Обработка состояний
         await handle_message_logic(message, bot)
     
     logger.info("🤖 Запуск polling основного бота...")
@@ -1566,7 +1609,6 @@ if __name__ == "__main__":
     print("🤖 ЗАПУСК БОТА POLARSEARCH")
     print("=" * 60)
     
-    # Создание фото
     if not os.path.exists('start.png'):
         print("📷 Создание изображения...")
         try:
@@ -1577,7 +1619,6 @@ if __name__ == "__main__":
             with open('start.png', 'w') as f:
                 f.write('Photo placeholder')
     
-    # Инициализация БД
     try:
         init_database()
         print("✅ База данных инициализирована")
@@ -1585,24 +1626,20 @@ if __name__ == "__main__":
         print(f"❌ Ошибка БД: {e}")
         exit(1)
     
-    # Загрузка каналов
     try:
         REQUIRED_CHANNELS = get_active_channels()
         print(f"✅ Загружено каналов: {len(REQUIRED_CHANNELS)}")
     except Exception as e:
         print(f"❌ Ошибка загрузки каналов: {e}")
     
-    # Запуск зеркал
     try:
         existing_mirrors = get_mirror_bots()
         print(f"✅ Найдено зеркал: {len(existing_mirrors)}")
         for mirror in existing_mirrors:
             try:
-                def run_existing_mirror():
-                    asyncio.run(start_mirror_bot(mirror[1], mirror[2], mirror[3]))
-                mirror_thread = Thread(target=run_existing_mirror, daemon=True)
-                mirror_thread.start()
+                create_mirror_bot_instance(mirror[1], mirror[2], mirror[3])
                 print(f"✅ Запущено зеркало: {mirror[3]}")
+                time.sleep(1)  # Задержка между запусками
             except Exception as e:
                 print(f"❌ Ошибка запуска зеркала {mirror[3]}: {e}")
     except Exception as e:
@@ -1614,11 +1651,13 @@ if __name__ == "__main__":
     print("✅ БОТ ЗАПУЩЕН И ГОТОВ К РАБОТЕ!")
     print("=" * 60)
     
-    # Запуск основного бота
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n🛑 Бот остановлен пользователем")
+        # Остановка всех зеркал
+        for token, task in mirror_tasks.items():
+            task.cancel()
     except Exception as e:
         print(f"❌ Критическая ошибка: {e}")
         import traceback
