@@ -34,10 +34,8 @@ except ModuleNotFoundError:
 
 # ========== КОНФИГУРАЦИЯ ==========
 MAIN_BOT_TOKEN = "8249888150:AAGF9Q1IprTnFXpbS1vwzQnqwO20pfnmjcU"
-LEAKOSINT_API_TOKEN = "5314346616:eqEVfuIy"
+LEAKOSINT_API_TOKEN = "7501355771:Tuq93eQf"
 LEAKOSINT_URL = "https://leakosintapi.com/"
-DEPSEARCH_API_TOKEN = "TкукупапапапапапапапапапапапапапппаааппппаааапапппааааппппаааапапппапEST"
-DEPSEARCH_URL = "https://api.depsearch.sbs"
 LANG = "ru"
 LIMIT = 3000
 WEBSITE_URL = "https://v0-polarsearch.vercel.app"
@@ -109,11 +107,42 @@ async def safe_send_message(bot: Bot, chat_id: int, text: str, parse_mode: str =
                 await asyncio.sleep(2 ** attempt)
     return None
 
+async def safe_send_photo(bot: Bot, chat_id: int, photo_url: str, caption: str, parse_mode: str = "HTML", reply_markup=None):
+    try:
+        if photo_url.startswith('http'):
+            return await bot.send_photo(chat_id, photo_url, caption=caption, parse_mode=parse_mode, reply_markup=reply_markup)
+        elif os.path.exists(photo_url):
+            photo = types.FSInputFile(photo_url)
+            return await bot.send_photo(chat_id, photo, caption=caption, parse_mode=parse_mode, reply_markup=reply_markup)
+        else:
+            return await safe_send_message(bot, chat_id, caption, parse_mode, reply_markup)
+    except Exception as e:
+        logger.error(f"Ошибка отправки фото: {e}")
+        return await safe_send_message(bot, chat_id, caption, parse_mode, reply_markup)
+
 async def safe_answer_callback(callback: CallbackQuery, text: str = None):
     try:
         await callback.answer(text)
     except Exception as e:
         logger.warning(f"Не удалось ответить на callback: {e}")
+
+async def create_default_photo():
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new('RGB', (512, 512), color='#2b2d42')
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([(100, 100), (412, 412)], fill='#8d99ae')
+        try:
+            font = ImageFont.truetype("arial.ttf", 60)
+        except:
+            font = ImageFont.load_default()
+        draw.text((256, 256), "🔍", fill='#edf2f4', font=font, anchor="mm")
+        img.save('start.png')
+        logger.info("✅ Создано фото start.png")
+    except Exception as e:
+        logger.warning(f"Не удалось создать фото: {e}")
+        with open('start.png', 'w') as f:
+            f.write('Photo placeholder')
 
 # ========== БАЗА ДАННЫХ ==========
 def init_database():
@@ -167,18 +196,6 @@ def init_database():
             content TEXT NOT NULL,
             created_date TEXT,
             created_by INTEGER
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS saved_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            query TEXT,
-            report_data TEXT,
-            api_source TEXT,
-            created_date TEXT,
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     ''')
     
@@ -236,46 +253,6 @@ def get_user_stats(user_id: int):
         logger.error(f"Ошибка получения статистики: {e}")
         return None
 
-def save_report(user_id: int, query: str, report_data: str, api_source: str):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute('''
-            INSERT INTO saved_reports (user_id, query, report_data, api_source, created_date)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, query, report_data, api_source, created_date))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка сохранения отчета: {e}")
-        return False
-
-def get_saved_reports(user_id: int):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM saved_reports WHERE user_id = ? ORDER BY created_date DESC LIMIT 20', (user_id,))
-        reports = cursor.fetchall()
-        conn.close()
-        return reports
-    except Exception as e:
-        logger.error(f"Ошибка получения отчетов: {e}")
-        return []
-
-def delete_report(report_id: int, user_id: int):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM saved_reports WHERE id = ? AND user_id = ?', (report_id, user_id))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка удаления отчета: {e}")
-        return False
-
 def add_mirror_bot(bot_token: str, owner_id: int, bot_name: str):
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -315,6 +292,7 @@ def remove_mirror_bot(bot_token: str):
         conn.commit()
         conn.close()
         
+        # Остановка зеркала
         if bot_token in mirror_tasks:
             mirror_tasks[bot_token].cancel()
             del mirror_tasks[bot_token]
@@ -369,6 +347,7 @@ def get_active_channels():
         logger.error(f"Ошибка получения каналов: {e}")
         return []
 
+# ========== БАЗА ЗНАНИЙ ==========
 def add_knowledge(title: str, content: str, created_by: int):
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -448,9 +427,8 @@ def create_start_keyboard():
          InlineKeyboardButton(text="📚 База знаний", callback_data="knowledge_base_menu")],
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile_menu"),
          InlineKeyboardButton(text="🤖 Зеркала", callback_data="mirrors_menu")],
-        [InlineKeyboardButton(text="💾 Мои отчеты", callback_data="my_reports"),
-         InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_menu")],
-        [InlineKeyboardButton(text="🌐 Наш сайт", url=WEBSITE_URL)]
+        [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_menu"),
+         InlineKeyboardButton(text="🌐 Наш сайт", url=WEBSITE_URL)]
     ])
 
 def create_mirrors_keyboard():
@@ -490,17 +468,13 @@ def create_dorking_keyboard():
          InlineKeyboardButton(text="🆔 Поиск по ID", callback_data="dork_id")],
         [InlineKeyboardButton(text="🌐 Поиск по домену", callback_data="dork_domain"),
          InlineKeyboardButton(text="🔍 Универсальный", callback_data="dork_universal")],
-        [InlineKeyboardButton(text="📁 GitHub Dorks", callback_data="dork_github"),
-         InlineKeyboardButton(text="🔓 Уязвимости", callback_data="dork_vulns")],
-        [InlineKeyboardButton(text="📄 Документы", callback_data="dork_docs"),
-         InlineKeyboardButton(text="🎯 Соцсети", callback_data="dork_social")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
     ])
 
 def create_profile_keyboard(user_id: int):
     buttons = [
         [InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
-         InlineKeyboardButton(text="💾 Мои отчеты", callback_data="my_reports")]
+         InlineKeyboardButton(text="🆘 Помощь", callback_data="help_menu")]
     ]
     if is_admin(user_id):
         buttons.append([InlineKeyboardButton(text="👑 Админ панель", callback_data="admin_panel")])
@@ -530,24 +504,16 @@ def create_back_keyboard(callback_data: str = "back_to_main"):
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=callback_data)]
     ])
 
-def create_search_keyboard(query_id: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💾 Сохранить отчет", callback_data=f"save_report_{query_id}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
-    ])
-
 def create_inline_keyboard(query_id: str, page_id: int, count_page: int):
+    if count_page <= 1:
+        return create_back_keyboard()
     buttons = []
     if page_id > 0:
         buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"page_{query_id}_{page_id-1}"))
     buttons.append(InlineKeyboardButton(text=f"{page_id+1}/{count_page}", callback_data="current_page"))
     if page_id < count_page - 1:
         buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"page_{query_id}_{page_id+1}"))
-    
-    keyboard = [buttons]
-    keyboard.append([InlineKeyboardButton(text="💾 Сохранить отчет", callback_data=f"save_report_{query_id}")])
-    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=[buttons, [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]])
 
 def create_subscription_keyboard(channels: List[Dict]):
     buttons = []
@@ -565,7 +531,7 @@ def create_mirror_delete_keyboard(mirrors):
 
 def create_knowledge_keyboard(knowledge_list):
     buttons = []
-    for kb in knowledge_list[:20]:
+    for kb in knowledge_list[:20]:  # Ограничение 20 записей
         buttons.append([InlineKeyboardButton(text=f"📄 {kb[1]}", callback_data=f"kb_view_{kb[0]}")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -585,20 +551,8 @@ def create_knowledge_delete_keyboard(knowledge_list):
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_knowledge")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def create_reports_keyboard(reports):
-    buttons = []
-    for report in reports[:20]:
-        date = report[5][:16]
-        buttons.append([InlineKeyboardButton(text=f"📄 {report[2][:30]} | {date}", callback_data=f"view_report_{report[0]}")])
-    if len(reports) > 0:
-        buttons.append([InlineKeyboardButton(text="🗑️ Удалить все", callback_data="delete_all_reports")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="profile_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-# ========== API ФУНКЦИИ ==========
-
-def search_leakosint(query: str, query_id: str):
-    """Поиск через LeakOsint API"""
+# ========== LEAKOSINT ==========
+def generate_report(query: str, query_id: str):
     global cash_reports
     data = {"token": LEAKOSINT_API_TOKEN, "request": query.split("\n")[0], "limit": LIMIT, "lang": LANG}
     
@@ -624,219 +578,13 @@ def search_leakosint(query: str, query_id: str):
             cash_reports[str(query_id)].append(text)
         return cash_reports[str(query_id)]
     except Exception as e:
-        logger.error(f"Ошибка при генерации отчета LeakOsint: {e}")
+        logger.error(f"Ошибка при генерации отчета: {e}")
         return None
 
-def search_depsearch(query: str):
-    """Поиск через DepSearch API"""
-    try:
-        query = query.strip()
-        url = f"{DEPSEARCH_URL}/quest={query}?token={DEPSEARCH_API_TOKEN}"
-        
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            
-            if "results" in data and len(data["results"]) > 0:
-                result_text = ["<b>🔍 Результаты DepSearch API</b>\n"]
-                
-                for idx, item in enumerate(data["results"], 1):
-                    result_text.append(f"<b>Результат #{idx}:</b>")
-                    for key, value in item.items():
-                        if key not in ['_id', '__v']:
-                            result_text.append(f"<b>{key}:</b> <code>{value}</code>")
-                    result_text.append("")
-                
-                if "search_time" in data:
-                    result_text.append(f"⏱ <i>Время поиска: {data['search_time']} сек</i>")
-                
-                return "\n".join(result_text)
-            else:
-                return "❌ Данные не найдены в DepSearch"
-        else:
-            return f"❌ Ошибка API: {response.status_code}"
-    except Exception as e:
-        logger.error(f"Ошибка DepSearch API: {e}")
-        return f"❌ Ошибка: {str(e)}"
-
-def combined_search(query: str, query_id: str):
-    """Комбинированный поиск по обоим API"""
-    results = []
-    
-    # LeakOsint
-    leakosint_result = search_leakosint(query, query_id)
-    if leakosint_result and "No results found" not in str(leakosint_result):
-        results.extend(leakosint_result)
-    
-    # DepSearch
-    depsearch_result = search_depsearch(query)
-    if depsearch_result and "не найдены" not in depsearch_result and "Ошибка" not in depsearch_result:
-        results.append(depsearch_result)
-    
-    if not results:
-        return None
-    
-    cash_reports[str(query_id)] = results
-    return results
-
-# ========== УЛУЧШЕННЫЕ DORKING ФУНКЦИИ ==========
-
-def dorking_search(query: str, search_type: str) -> str:
-    """Улучшенный поиск информации через Google Dorking"""
-    try:
-        search_engines = {
-            'google': f"https://www.google.com/search?q={quote(query)}",
-            'yandex': f"https://yandex.ru/search/?text={quote(query)}",
-            'bing': f"https://www.bing.com/search?q={quote(query)}",
-            'duckduckgo': f"https://duckduckgo.com/?q={quote(query)}"
-        }
-        
-        dork_queries = []
-        
-        if search_type == "username":
-            dork_queries = [
-                f'"{query}" site:vk.com',
-                f'"{query}" site:instagram.com',
-                f'"{query}" site:twitter.com OR site:x.com',
-                f'"{query}" site:facebook.com',
-                f'"{query}" site:github.com',
-                f'"{query}" site:linkedin.com',
-                f'"{query}" site:youtube.com',
-                f'"{query}" site:tiktok.com',
-                f'"{query}" site:telegram.me OR site:t.me',
-                f'"{query}" site:reddit.com',
-                f'"{query}" site:twitch.tv',
-                f'"{query}" site:discord.gg'
-            ]
-        
-        elif search_type == "email":
-            dork_queries = [
-                f'"{query}"',
-                f'"{query}" site:pastebin.com',
-                f'"{query}" filetype:txt',
-                f'"{query}" filetype:pdf',
-                f'"{query}" filetype:doc OR filetype:docx',
-                f'"{query}" filetype:xls OR filetype:xlsx',
-                f'"{query}" site:github.com',
-                f'"{query}" intext:"email"',
-                f'"{query}" intext:"contact"',
-                f'"{query}" inurl:contact'
-            ]
-        
-        elif search_type == "phone":
-            clean_phone = re.sub(r'[^\d+]', '', query)
-            dork_queries = [
-                f'"{clean_phone}"',
-                f'"{clean_phone}" site:vk.com',
-                f'"{clean_phone}" site:avito.ru',
-                f'"{clean_phone}" intext:"phone" OR intext:"телефон"',
-                f'"{clean_phone}" filetype:xlsx OR filetype:csv',
-                f'"{clean_phone}" site:facebook.com',
-                f'"{clean_phone}" inurl:profile',
-                f'"{clean_phone}" site:linkedin.com'
-            ]
-        
-        elif search_type == "id":
-            dork_queries = [
-                f'"{query}" site:vk.com',
-                f'"{query}" site:t.me',
-                f'"{query}" site:ok.ru',
-                f'"{query}" site:facebook.com',
-                f'"{query}" inurl:id',
-                f'"{query}" inurl:profile'
-            ]
-        
-        elif search_type == "domain":
-            dork_queries = [
-                f'site:{query}',
-                f'site:{query} inurl:admin OR inurl:login',
-                f'site:{query} filetype:pdf',
-                f'site:{query} filetype:doc',
-                f'site:{query} intext:"password"',
-                f'site:{query} inurl:wp-admin',
-                f'related:{query}',
-                f'link:{query}',
-                f'site:{query} inurl:backup',
-                f'site:{query} intitle:"index of"'
-            ]
-        
-        elif search_type == "github":
-            dork_queries = [
-                f'"{query}" site:github.com',
-                f'"{query}" filename:config.json site:github.com',
-                f'"{query}" filename:.env site:github.com',
-                f'"{query}" "api_key" OR "apikey" site:github.com',
-                f'"{query}" "password" site:github.com',
-                f'"{query}" "token" site:github.com',
-                f'"{query}" extension:pem site:github.com',
-                f'"{query}" filename:id_rsa site:github.com'
-            ]
-        
-        elif search_type == "vulns":
-            dork_queries = [
-                f'inurl:admin intitle:login',
-                f'inurl:login.php',
-                f'intitle:"Index of" "parent directory"',
-                f'filetype:sql "password" OR "passwd"',
-                f'inurl:wp-config.php intext:DB_PASSWORD',
-                f'intitle:"phpMyAdmin" "Welcome to phpMyAdmin"',
-                f'inurl:"/proc/self/cwd"',
-                f'intitle:"index of" "backup"'
-            ]
-        
-        elif search_type == "docs":
-            dork_queries = [
-                f'"{query}" filetype:pdf',
-                f'"{query}" filetype:doc OR filetype:docx',
-                f'"{query}" filetype:xls OR filetype:xlsx',
-                f'"{query}" filetype:ppt OR filetype:pptx',
-                f'"{query}" filetype:txt',
-                f'"{query}" filetype:csv',
-                f'"{query}" intitle:"index of" pdf'
-            ]
-        
-        elif search_type == "social":
-            dork_queries = [
-                f'"{query}" site:vk.com OR site:ok.ru',
-                f'"{query}" site:instagram.com OR site:facebook.com',
-                f'"{query}" site:twitter.com OR site:x.com',
-                f'"{query}" site:linkedin.com',
-                f'"{query}" site:tiktok.com',
-                f'"{query}" site:youtube.com',
-                f'"{query}" site:t.me OR site:telegram.me'
-            ]
-        
-        else:
-            dork_queries = [f'"{query}"']
-        
-        result = [
-            f"🕵️ <b>Dorking поиск: {search_type}</b>\n",
-            f"<b>Запрос:</b> <code>{query}</code>\n",
-            "<b>🔍 Ссылки для поиска:</b>\n"
-        ]
-        
-        for i, dork in enumerate(dork_queries[:15], 1):
-            encoded_dork = quote(dork)
-            google_link = f"https://www.google.com/search?q={encoded_dork}"
-            dork_display = dork[:60] + "..." if len(dork) > 60 else dork
-            result.append(f"{i}. <a href='{google_link}'>{dork_display}</a>")
-        
-        result.append("\n<b>🌐 Поисковые системы:</b>")
-        result.append(f"• <a href='{search_engines['google']}'>Google</a>")
-        result.append(f"• <a href='{search_engines['yandex']}'>Yandex</a>")
-        result.append(f"• <a href='{search_engines['bing']}'>Bing</a>")
-        result.append(f"• <a href='{search_engines['duckduckgo']}'>DuckDuckGo</a>")
-        
-        result.append("\n<i>💡 Нажмите на ссылку для поиска</i>")
-        
-        return "\n".join(result)
-    except Exception as e:
-        logger.error(f"Ошибка dorking: {e}")
-        return f"❌ Ошибка: {str(e)}"
-
-# ========== OSINT ИНСТРУМЕНТЫ ==========
+# ========== НОВЫЕ ИНСТРУМЕНТЫ ==========
 
 def generate_password(length: int = 16, use_special: bool = True) -> str:
+    """Генератор надежных паролей"""
     try:
         chars = string.ascii_letters + string.digits
         if use_special:
@@ -847,6 +595,7 @@ def generate_password(length: int = 16, use_special: bool = True) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 def calculate_hash(text: str) -> str:
+    """Вычисление хешей MD5 и SHA-256"""
     try:
         md5_hash = hashlib.md5(text.encode()).hexdigest()
         sha256_hash = hashlib.sha256(text.encode()).hexdigest()
@@ -864,6 +613,7 @@ def calculate_hash(text: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 def validate_email(email: str) -> str:
+    """Валидация email адреса"""
     try:
         email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
         is_valid = re.match(email_regex, email) is not None
@@ -887,6 +637,7 @@ def validate_email(email: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 def analyze_phone(phone: str) -> str:
+    """Анализ телефонного номера"""
     try:
         clean_phone = re.sub(r'[^\d+]', '', phone)
         
@@ -903,9 +654,7 @@ def analyze_phone(phone: str) -> str:
             '+49': '🇩🇪 Германия',
             '+33': '🇫🇷 Франция',
             '+380': '🇺🇦 Украина',
-            '+375': '🇧🇾 Беларусь',
-            '+998': '🇺🇿 Узбекистан',
-            '+996': '🇰🇬 Кыргызстан'
+            '+375': '🇧🇾 Беларусь'
         }
         
         for code, country in country_codes.items():
@@ -918,6 +667,7 @@ def analyze_phone(phone: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 def get_ip_geolocation(ip: str) -> str:
+    """IP Geolocation"""
     try:
         response = requests.get(f"http://ip-api.com/json/{ip}", timeout=10).json()
         if response.get('status') == 'success':
@@ -937,6 +687,7 @@ def get_ip_geolocation(ip: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 def scan_ports(host: str, ports: str = "21,22,23,25,80,443,3306,3389,8080") -> str:
+    """Простой сканер портов"""
     try:
         host = host.replace('http://', '').replace('https://', '').split('/')[0]
         port_list = [int(p.strip()) for p in ports.split(',')]
@@ -944,7 +695,7 @@ def scan_ports(host: str, ports: str = "21,22,23,25,80,443,3306,3389,8080") -> s
         result = [f"🔍 <b>Сканирование портов: {host}</b>\n"]
         open_ports = []
         
-        for port in port_list[:10]:
+        for port in port_list[:10]:  # Ограничение 10 портов
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
             if sock.connect_ex((host, port)) == 0:
@@ -963,6 +714,7 @@ def scan_ports(host: str, ports: str = "21,22,23,25,80,443,3306,3389,8080") -> s
         return f"❌ Ошибка: {str(e)}"
 
 def get_ssl_info(domain: str) -> str:
+    """Информация о SSL сертификате"""
     try:
         import ssl
         domain = domain.replace('http://', '').replace('https://', '').split('/')[0]
@@ -983,6 +735,88 @@ def get_ssl_info(domain: str) -> str:
         return "\n".join(result)
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
+
+# ========== DORKING ФУНКЦИИ ==========
+
+def dorking_search(query: str, search_type: str) -> str:
+    """Поиск информации через Google Dorking"""
+    try:
+        search_engines = {
+            'google': f"https://www.google.com/search?q={quote(query)}",
+            'yandex': f"https://yandex.ru/search/?text={quote(query)}",
+            'bing': f"https://www.bing.com/search?q={quote(query)}",
+            'duckduckgo': f"https://duckduckgo.com/?q={quote(query)}"
+        }
+        
+        dork_queries = []
+        
+        if search_type == "username":
+            dork_queries = [
+                f'"{query}" site:vk.com',
+                f'"{query}" site:instagram.com',
+                f'"{query}" site:twitter.com',
+                f'"{query}" site:facebook.com',
+                f'"{query}" site:github.com',
+                f'"{query}" site:linkedin.com',
+                f'"{query}" site:youtube.com',
+                f'"{query}" site:tiktok.com',
+                f'"{query}" site:telegram.me',
+                f'"{query}" site:reddit.com'
+            ]
+        elif search_type == "email":
+            dork_queries = [
+                f'"{query}"',
+                f'"{query}" site:pastebin.com',
+                f'"{query}" filetype:txt',
+                f'"{query}" filetype:pdf',
+                f'"{query}" site:github.com',
+                f'"{query}" intext:"email"'
+            ]
+        elif search_type == "phone":
+            clean_phone = re.sub(r'[^\d+]', '', query)
+            dork_queries = [
+                f'"{clean_phone}"',
+                f'"{clean_phone}" site:vk.com',
+                f'"{clean_phone}" intext:"phone"',
+                f'"{clean_phone}" intext:"телефон"',
+                f'"{clean_phone}" site:avito.ru'
+            ]
+        elif search_type == "domain":
+            dork_queries = [
+                f'site:{query}',
+                f'site:{query} inurl:admin',
+                f'site:{query} filetype:pdf',
+                f'site:{query} intext:"password"',
+                f'related:{query}'
+            ]
+        else:
+            dork_queries = [f'"{query}"']
+        
+        result = [
+            f"🕵️ <b>Dorking поиск: {search_type}</b>\n",
+            f"<b>Запрос:</b> <code>{query}</code>\n",
+            "<b>🔍 Ссылки для поиска:</b>\n"
+        ]
+        
+        for i, dork in enumerate(dork_queries[:10], 1):
+            encoded_dork = quote(dork)
+            google_link = f"https://www.google.com/search?q={encoded_dork}"
+            result.append(f"{i}. <a href='{google_link}'>{dork[:50]}</a>")
+        
+        result.append("\n<b>🌐 Поисковые системы:</b>")
+        result.append(f"• <a href='{search_engines['google']}'>Google</a>")
+        result.append(f"• <a href='{search_engines['yandex']}'>Yandex</a>")
+        result.append(f"• <a href='{search_engines['bing']}'>Bing</a>")
+        result.append(f"• <a href='{search_engines['duckduckgo']}'>DuckDuckGo</a>")
+        
+        result.append("\n<i>💡 Нажмите на ссылку для поиска</i>")
+        
+        return "\n".join(result)
+    except Exception as e:
+        logger.error(f"Ошибка dorking: {e}")
+        return f"❌ Ошибка: {str(e)}"
+
+# ========== OSINT ФУНКЦИИ ==========
 
 def perform_whois(domain: str) -> str:
     try:
@@ -1190,7 +1024,7 @@ def analyze_server_software(url: str) -> str:
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
-# ========== ЗЕРКАЛА ==========
+# ========== ЗЕРКАЛА (ИСПРАВЛЕНО) ==========
 
 async def start_mirror_bot(bot_token: str, owner_id: int, bot_name: str):
     """Запуск зеркала бота в отдельном event loop"""
@@ -1219,12 +1053,16 @@ async def start_mirror_bot(bot_token: str, owner_id: int, bot_name: str):
                     reply_markup=keyboard)
                 return
             
+            photo_path = 'start.png'
             caption = (f"👋 <b>Добро пожаловать, {first_name}!</b>\n\n"
                       f"🤖 <b>Зеркало:</b> {bot_name}\n"
                       f"🌐 {WEBSITE_URL}\n\n"
                       "🔍 Бот для поиска утечек и OSINT\n\nВыберите действие:")
             
-            await safe_send_message(bot, user_id, caption, reply_markup=create_start_keyboard())
+            if os.path.exists(photo_path):
+                await safe_send_photo(bot, user_id, photo_path, caption, reply_markup=create_start_keyboard())
+            else:
+                await safe_send_message(bot, user_id, caption, reply_markup=create_start_keyboard())
         
         @dp.callback_query()
         async def mirror_callback(callback: types.CallbackQuery):
@@ -1250,9 +1088,11 @@ def create_mirror_bot_instance(bot_token: str, owner_id: int, bot_name: str):
     try:
         if add_mirror_bot(bot_token, owner_id, bot_name):
             def run_mirror_in_thread():
+                # Создаем новый event loop для потока
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
+                    # Создаем task для зеркала
                     task = loop.create_task(start_mirror_bot(bot_token, owner_id, bot_name))
                     mirror_tasks[bot_token] = task
                     loop.run_until_complete(task)
@@ -1293,16 +1133,14 @@ async def handle_message_logic(message: types.Message, bot_instance: Bot):
         if state.get("waiting_for") == "search_query":
             query_id = str(randint(0, 9999999))
             increment_requests(user_id)
-            msg = await safe_send_message(bot_instance, user_id, "⏳ Ищу информацию в LeakOsint и DepSearch...")
+            await safe_send_message(bot_instance, user_id, "⏳ Ищу информацию...")
+            report = generate_report(text, query_id)
             
-            report = combined_search(text, query_id)
-            
-            if report and len(report) > 0:
-                await safe_delete_message(bot_instance, user_id, msg.message_id)
+            if report and len(report) > 0 and "No results found" not in report[0]:
                 markup = create_inline_keyboard(query_id, 0, len(report))
                 await safe_send_message(bot_instance, user_id, report[0], reply_markup=markup)
             else:
-                await safe_edit_message(bot_instance, user_id, msg.message_id,
+                await safe_send_message(bot_instance, user_id, 
                     f"🔍 Информация не найдена\n\n<b>Запрос:</b> <code>{text}</code>", 
                     reply_markup=create_back_keyboard())
             
@@ -1345,6 +1183,7 @@ async def handle_message_logic(message: types.Message, bot_instance: Bot):
         
         elif "kb_title" in state:
             if user_states[user_id].get("kb_title") is None:
+                # Первое сообщение - название
                 user_states[user_id]["kb_title"] = text
                 await safe_send_message(bot_instance, user_id,
                     "📝 <b>Добавление в базу знаний</b>\n\n"
@@ -1352,6 +1191,7 @@ async def handle_message_logic(message: types.Message, bot_instance: Bot):
                     "Теперь отправьте текст статьи:",
                     reply_markup=create_back_keyboard("admin_knowledge"))
             else:
+                # Второе сообщение - текст
                 title = user_states[user_id].get("kb_title", "")
                 if add_knowledge(title, text, user_id):
                     await safe_send_message(bot_instance, user_id,
@@ -1381,7 +1221,7 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
     no_check_callbacks = ["check_subscription", "admin_panel", "admin_stats", "admin_users", 
                           "admin_channels", "admin_mirrors", "current_page"]
     
-    if data not in no_check_callbacks and not data.startswith("page_") and not data.startswith("save_report_"):
+    if data not in no_check_callbacks and not data.startswith("page_"):
         subscribed, not_subscribed = await check_user_subscription(bot_instance, user_id)
         if not subscribed:
             keyboard = create_subscription_keyboard(not_subscribed)
@@ -1389,529 +1229,415 @@ async def handle_callback_logic(callback: types.CallbackQuery, bot_instance: Bot
             await safe_send_message(bot_instance, chat_id, "📢 Подпишитесь на каналы!", reply_markup=keyboard)
             await safe_answer_callback(callback)
             return
-        try:
-            if data == "check_subscription":
-                subscribed, not_subscribed = await check_user_subscription(bot_instance, user_id)
-                if subscribed:
-                    await safe_delete_message(bot_instance, chat_id, message_id)
-                    caption = f"✅ Спасибо за подписку!\n\n🌐 {WEBSITE_URL}\n\nВыберите действие:"
-                    await safe_send_message(bot_instance, chat_id, caption, reply_markup=create_start_keyboard())
-                else:
-                    keyboard = create_subscription_keyboard(not_subscribed)
-                    await safe_edit_message(bot_instance, chat_id, message_id, "❌ Вы не подписались на все каналы!", reply_markup=keyboard)
-                await safe_answer_callback(callback)
-            
-            elif data == "back_to_main":
+    
+    try:
+        if data == "check_subscription":
+            subscribed, not_subscribed = await check_user_subscription(bot_instance, user_id)
+            if subscribed:
                 await safe_delete_message(bot_instance, chat_id, message_id)
-                caption = f"🔍 <b>Главное меню</b>\n\n🌐 {WEBSITE_URL}\n\nВыберите действие:"
+                photo_path = 'start.png'
+                caption = f"✅ Спасибо за подписку!\n\n🌐 {WEBSITE_URL}\n\nВыберите действие:"
+                if os.path.exists(photo_path):
+                    await safe_send_photo(bot_instance, chat_id, photo_path, caption, reply_markup=create_start_keyboard())
+                else:
+                    await safe_send_message(bot_instance, chat_id, caption, reply_markup=create_start_keyboard())
+            else:
+                keyboard = create_subscription_keyboard(not_subscribed)
+                await safe_edit_message(bot_instance, chat_id, message_id, "❌ Вы не подписались на все каналы!", reply_markup=keyboard)
+            await safe_answer_callback(callback)
+        
+        elif data == "back_to_main":
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            photo_path = 'start.png'
+            caption = f"🔍 <b>Главное меню</b>\n\n🌐 {WEBSITE_URL}\n\nВыберите действие:"
+            if os.path.exists(photo_path):
+                await safe_send_photo(bot_instance, chat_id, photo_path, caption, reply_markup=create_start_keyboard())
+            else:
                 await safe_send_message(bot_instance, chat_id, caption, reply_markup=create_start_keyboard())
-        except Exception as e:
-            import logging
-            logging.error(f"Ошибка в обработчике callback: {e}")
-            try:
-                await safe_answer_callback(callback)
-            except Exception:
-                pass
-
-    elif data == "leak_search":
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id,
-            "🔍 <b>Поиск утечек данных</b>\n\n"
-            "<b>Введите данные для поиска:</b>\n\n"
-            "<i>Примеры:</i>\n"
-            "• example@gmail.com\n"
-            "• +79991234567\n"
-            "• username\n"
-            "• ФИО\n"
-            "• СНИЛС/ИНН\n"
-            "• VIN/ГРЗ\n"
-            "• vkid123 / tgid123",
-            reply_markup=create_back_keyboard())
-        user_states[user_id] = {"waiting_for": "search_query"}
-    
-    elif data == "tools_menu":
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, 
-            "🛠️ <b>Инструменты OSINT</b>\n\nВыберите инструмент:", 
-            reply_markup=create_tools_keyboard())
-    
-    elif data.startswith("tool_"):
-        tool_name = data.replace("tool_", "")
-        tool_prompts = {
-            "whois": ("🔎 <b>WHOIS запрос</b>\n\nВведите домен:\n<i>Пример: example.com</i>", "whois"),
-            "subdomains": ("🌐 <b>Поиск поддоменов</b>\n\nВведите домен:\n<i>Пример: example.com</i>", "subdomains"),
-            "dns": ("📡 <b>DNS записи</b>\n\nВведите домен:\n<i>Пример: example.com</i>", "dns"),
-            "reverse_dns": ("🔄 <b>Обратный DNS</b>\n\nВведите IP адрес:\n<i>Пример: 8.8.8.8</i>", "reverse_dns"),
-            "site_relations": ("🔗 <b>Внешние ссылки</b>\n\nВведите URL:\n<i>Пример: example.com</i>", "site_relations"),
-            "availability": ("📶 <b>Проверка доступности</b>\n\nВведите URL:\n<i>Пример: example.com</i>", "availability"),
-            "content": ("📄 <b>Контент сайта</b>\n\nВведите URL:\n<i>Пример: example.com</i>", "content"),
-            "server": ("🖥️ <b>Серверное ПО</b>\n\nВведите URL:\n<i>Пример: example.com</i>", "server"),
-            "password": ("🔐 <b>Генератор паролей</b>\n\nВведите длину (8-64):\n<i>По умолчанию: 16</i>", "password"),
-            "hash": ("🔒 <b>Хеширование</b>\n\nВведите текст для хеширования:", "hash"),
-            "email": ("📧 <b>Валидация Email</b>\n\nВведите email адрес:", "email"),
-            "phone": ("📱 <b>Анализ телефона</b>\n\nВведите номер телефона:", "phone"),
-            "ip_geo": ("🌍 <b>IP Geolocation</b>\n\nВведите IP адрес:\n<i>Пример: 8.8.8.8</i>", "ip_geo"),
-            "port_scan": ("🔍 <b>Port Scanner</b>\n\nВведите хост и порты:\n<i>Пример: example.com 80,443</i>", "port_scan"),
-            "ssl": ("🔐 <b>SSL Info</b>\n\nВведите домен:\n<i>Пример: example.com</i>", "ssl")
-        }
         
-        if tool_name in tool_prompts:
-            prompt, state_name = tool_prompts[tool_name]
-            await safe_delete_message(bot_instance, chat_id, message_id)
-            await safe_send_message(bot_instance, chat_id, prompt, reply_markup=create_back_keyboard("tools_menu"))
-            user_states[user_id] = {"tool": state_name}
-        await safe_answer_callback(callback)
-    
-    elif data == "dorking_menu":
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id,
-            "🕵️ <b>Dorking поиск</b>\n\n"
-            "Поиск информации через поисковые системы\n\n"
-            "Выберите тип поиска:",
-            reply_markup=create_dorking_keyboard())
-    
-    elif data.startswith("dork_"):
-        dork_type = data.replace("dork_", "")
-        dork_prompts = {
-            "username": ("👤 <b>Поиск по никнейму</b>\n\nВведите никнейм:", "username"),
-            "email": ("📧 <b>Поиск по email</b>\n\nВведите email:", "email"),
-            "phone": ("📱 <b>Поиск по телефону</b>\n\nВведите номер:", "phone"),
-            "id": ("🆔 <b>Поиск по ID</b>\n\nВведите ID:", "id"),
-            "domain": ("🌐 <b>Поиск по домену</b>\n\nВведите домен:", "domain"),
-            "universal": ("🔍 <b>Универсальный поиск</b>\n\nВведите запрос:", "universal"),
-            "github": ("📁 <b>GitHub Dorks</b>\n\nВведите запрос для GitHub:", "github"),
-            "vulns": ("🔓 <b>Поиск уязвимостей</b>\n\nВведите домен или общий запрос:", "vulns"),
-            "docs": ("📄 <b>Поиск документов</b>\n\nВведите запрос:", "docs"),
-            "social": ("🎯 <b>Поиск в соцсетях</b>\n\nВведите имя/никнейм:", "social")
-        }
-        
-        if dork_type in dork_prompts:
-            prompt, state_name = dork_prompts[dork_type]
-            await safe_delete_message(bot_instance, chat_id, message_id)
-            await safe_send_message(bot_instance, chat_id, prompt, reply_markup=create_back_keyboard("dorking_menu"))
-            user_states[user_id] = {"dorking": state_name}
-        await safe_answer_callback(callback)
-    
-    elif data == "profile_menu":
-        user_stats = get_user_stats(user_id)
-        stats_text = "👤 <b>Ваш профиль</b>\n\n"
-        if user_stats:
-            stats_text += (
-                f"🆔 <b>ID:</b> <code>{user_stats[0]}</code>\n"
-                f"👤 <b>Имя:</b> {user_stats[2]}\n"
-                f"📅 <b>Регистрация:</b> {user_stats[4]}\n"
-                f"📊 <b>Запросов:</b> {user_stats[5]}"
-            )
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, stats_text, reply_markup=create_profile_keyboard(user_id))
-    
-    elif data == "my_stats":
-        user_stats = get_user_stats(user_id)
-        stats_text = "📊 <b>Ваша статистика</b>\n\n"
-        if user_stats:
-            stats_text += (
-                f"📅 <b>Дата регистрации:</b> {user_stats[4]}\n"
-                f"📊 <b>Всего запросов:</b> {user_stats[5]}\n"
-                f"👑 <b>Статус:</b> {'Администратор' if is_admin(user_id) else 'Пользователь'}"
-            )
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, stats_text, reply_markup=create_back_keyboard("profile_menu"))
-    
-    elif data == "my_reports":
-        reports = get_saved_reports(user_id)
-        if reports:
+        elif data == "leak_search":
             await safe_delete_message(bot_instance, chat_id, message_id)
             await safe_send_message(bot_instance, chat_id,
-                f"💾 <b>Мои сохраненные отчеты</b>\n\nВсего: {len(reports)}",
-                reply_markup=create_reports_keyboard(reports))
-        else:
-            await safe_answer_callback(callback, "📋 У вас пока нет сохраненных отчетов")
-    
-    elif data.startswith("view_report_"):
-        report_id = int(data.replace("view_report_", ""))
-        reports = get_saved_reports(user_id)
-        report = next((r for r in reports if r[0] == report_id), None)
-        if report:
-            report_text = f"📄 <b>Отчет #{report_id}</b>\n\n"
-            report_text += f"<b>Запрос:</b> <code>{report[2]}</code>\n"
-            report_text += f"<b>API:</b> {report[4]}\n"
-            report_text += f"<b>Дата:</b> {report[5]}\n\n"
-            report_text += report[3][:3500]
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_rep_{report_id}")],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="my_reports")]
-            ])
-            await safe_delete_message(bot_instance, chat_id, message_id)
-            await safe_send_message(bot_instance, chat_id, report_text, reply_markup=keyboard)
-        else:
-            await safe_answer_callback(callback, "❌ Отчет не найден")
-    
-    elif data.startswith("delete_rep_"):
-        report_id = int(data.replace("delete_rep_", ""))
-        if delete_report(report_id, user_id):
-            await safe_answer_callback(callback, "✅ Отчет удален")
-            reports = get_saved_reports(user_id)
-            if reports:
-                await safe_edit_message(bot_instance, chat_id, message_id,
-                    f"💾 <b>Мои сохраненные отчеты</b>\n\nВсего: {len(reports)}",
-                    reply_markup=create_reports_keyboard(reports))
-            else:
-                await safe_delete_message(bot_instance, chat_id, message_id)
-                await safe_send_message(bot_instance, chat_id,
-                    "📋 У вас больше нет сохраненных отчетов",
-                    reply_markup=create_back_keyboard("profile_menu"))
-        else:
-            await safe_answer_callback(callback, "❌ Ошибка удаления")
-    
-    elif data == "delete_all_reports":
-        reports = get_saved_reports(user_id)
-        count = 0
-        for report in reports:
-            if delete_report(report[0], user_id):
-                count += 1
-        await safe_answer_callback(callback, f"✅ Удалено отчетов: {count}")
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id,
-            "📋 Все отчеты удалены",
-            reply_markup=create_back_keyboard("profile_menu"))
-    
-    elif data.startswith("save_report_"):
-        query_id = data.replace("save_report_", "")
-        if query_id in cash_reports:
-            report_data = "\n\n".join(cash_reports[query_id])
-            query_text = callback.message.text.split("Запрос:")[0] if "Запрос:" in callback.message.text else "Unknown"
-            
-            if save_report(user_id, query_text[:100], report_data, "Combined"):
-                await safe_answer_callback(callback, "✅ Отчет сохранен!")
-            else:
-                await safe_answer_callback(callback, "❌ Ошибка сохранения")
-        else:
-            await safe_answer_callback(callback, "❌ Отчет не найден")
-    
-    elif data == "mirrors_menu":
-        if is_mirror:
-            await safe_answer_callback(callback, "Доступно только в основном боте")
-            return
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, 
-            "🤖 <b>Управление зеркалами</b>\n\nСоздавайте копии бота с вашим токеном", 
-            reply_markup=create_mirrors_keyboard())
-    
-    elif data == "create_mirror":
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id,
-            "🤖 <b>Создание зеркала</b>\n\n"
-            "<b>Инструкция:</b>\n"
-            "1. Перейдите к @BotFather\n"
-            "2. Создайте нового бота (/newbot)\n"
-            "3. Скопируйте токен\n"
-            "4. Отправьте команду:\n\n"
-            "<code>/mirror ваш_токен</code>",
-            reply_markup=create_back_keyboard("mirrors_menu"))
-    
-    elif data == "my_mirrors":
-        mirrors = get_mirror_bots(user_id)
-        if mirrors:
-            mirrors_text = "📋 <b>Ваши зеркала:</b>\n\n"
-            for i, mirror in enumerate(mirrors, 1):
-                status = "🟢 Активно" if mirror[1] in active_bots else "🔴 Остановлено"
-                mirrors_text += f"{i}. <b>{mirror[3]}</b> {status}\n   <i>Создан: {mirror[4]}</i>\n\n"
-        else:
-            mirrors_text = "📋 У вас пока нет зеркал\n\nИспользуйте /mirror для создания"
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, mirrors_text, reply_markup=create_back_keyboard("mirrors_menu"))
-    
-    elif data == "delete_mirror":
-        mirrors = get_mirror_bots(user_id)
-        if mirrors:
-            try:
-                if knowledge_list:
-                    await safe_delete_message(bot_instance, chat_id, message_id)
-                    await safe_send_message(
-                        bot_instance, 
-                        chat_id,
-                        "🗑️ <b>Удаление статьи</b>\n\nВыберите статью для удаления:",
-                        reply_markup=create_knowledge_delete_keyboard(knowledge_list)
-                    )
-                else:
-                    await safe_delete_message(bot_instance, chat_id, message_id)
-                    await safe_send_message(
-                        bot_instance, 
-                        chat_id,
-                        "📚 База знаний пуста",
-                        reply_markup=create_back_keyboard("admin_knowledge")
-                    )
-            except Exception as e:
-                logger.error(f"Ошибка обработки callback {data}: {e}", exc_info=True)
-                try:
-                    await safe_answer_callback(callback, "❌ Произошла ошибка")
-                except Exception as reply_error:
-                    logger.error(f"Не удалось отправить сообщение об ошибке: {reply_error}")
-        else:
-            await safe_answer_callback(callback, "У вас нет зеркал")
-    
-    elif data.startswith("delete_mirror_"):
-        token = data.replace("delete_mirror_", "")
-        if remove_mirror_bot(token):
-            await safe_answer_callback(callback, "✅ Зеркало удалено")
+                "🔍 <b>Поиск утечек данных</b>\n\n"
+                "<b>Введите данные для поиска:</b>\n\n"
+                "<i>Примеры:</i>\n"
+                "• example@gmail.com\n"
+                "• +79991234567\n"
+                "• username\n"
+                "• ФИО",
+                reply_markup=create_back_keyboard())
+            user_states[user_id] = {"waiting_for": "search_query"}
+        
+        elif data == "tools_menu":
             await safe_delete_message(bot_instance, chat_id, message_id)
             await safe_send_message(bot_instance, chat_id, 
-                "✅ <b>Зеркало успешно удалено</b>", 
-                reply_markup=create_back_keyboard("mirrors_menu"))
-        else:
-            await safe_answer_callback(callback, "❌ Ошибка удаления")
-    
-    elif data == "mirrors_help":
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id,
-            "ℹ️ <b>Помощь по зеркалам</b>\n\n"
-            "<b>Что такое зеркало?</b>\n"
-            "Это копия бота с вашим токеном\n\n"
-            "<b>Как создать:</b>\n"
-            "1. Получите токен от @BotFather\n"
-            "2. Используйте /mirror токен\n"
-            "3. Зеркало запустится автоматически\n\n"
-            "<b>Преимущества:</b>\n"
-            "• Собственный бот\n"
-            "• Полный функционал\n"
-            "• Независимая работа",
-            reply_markup=create_back_keyboard("mirrors_menu"))
-    
-    elif data == "help_menu":
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id,
-            "🆘 <b>Помощь</b>\n\n"
-            "<b>Основные команды:</b>\n"
-            "/start - главное меню\n"
-            "/tools - инструменты\n"
-            "/mirror - создать зеркало\n"
-            "/profile - профиль\n"
-            "/help - помощь\n\n"
-            "<b>Возможности:</b>\n"
-            "🔍 Поиск утечек (2 API)\n"
-            "🛠️ OSINT инструменты (14 шт)\n"
-            "📚 База знаний\n"
-            "🕵️ Dorking поиск (10 типов)\n"
-            "🤖 Создание зеркал\n"
-            "💾 Сохранение отчетов\n\n"
-            f"🌐 <a href='{WEBSITE_URL}'>Наш сайт</a>",
-            reply_markup=create_back_keyboard())
-    
-    elif data == "admin_panel":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, 
-            "👑 <b>Админ панель</b>\n\nУправление ботом", 
-            reply_markup=create_admin_keyboard())
-    
-    elif data == "admin_stats":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        users = get_all_users()
-        total_requests = sum(u[5] for u in users)
-        mirrors = get_mirror_bots()
-        channels = get_active_channels()
+                "🛠️ <b>Инструменты OSINT</b>\n\nВыберите инструмент:", 
+                reply_markup=create_tools_keyboard())
         
-        stats_text = (
-            "📊 <b>Статистика бота</b>\n\n"
-            f"👥 <b>Пользователей:</b> {len(users)}\n"
-            f"📊 <b>Запросов:</b> {total_requests}\n"
-            f"🤖 <b>Зеркал:</b> {len(mirrors)} (активных: {len(active_bots)})\n"
-            f"📢 <b>Каналов:</b> {len(channels)}"
-        )
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, stats_text, reply_markup=create_back_keyboard("admin_panel"))
-    
-    elif data == "admin_users":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        users = get_all_users()
-        users_text = "👥 <b>Пользователи (топ 20):</b>\n\n"
-        for i, u in enumerate(users[:20], 1):
-            username = f"@{u[1]}" if u[1] else "Без ника"
-            users_text += f"{i}. {u[2]} ({username}) - {u[5]} запросов\n"
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, users_text, reply_markup=create_back_keyboard("admin_panel"))
-    
-    elif data == "admin_channels":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, 
-            "📢 <b>Управление каналами</b>\n\n"
-            "Для добавления канала отправьте:\n"
-            "<code>ID|Название|URL</code>\n\n"
-            "<i>Пример:</i>\n"
-            "<code>@channel|Мой канал|https://t.me/channel</code>", 
-            reply_markup=create_channels_keyboard())
-    
-    elif data == "channel_list":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        channels = get_active_channels()
-        if channels:
-            channels_text = "📋 <b>Список каналов:</b>\n\n"
-            for i, ch in enumerate(channels, 1):
-                channels_text += f"{i}. <b>{ch[1]}</b>\n   ID: <code>{ch[0]}</code>\n   <a href='{ch[2]}'>Ссылка</a>\n\n"
-        else:
-            channels_text = "📋 Каналов нет"
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, channels_text, reply_markup=create_back_keyboard("admin_channels"))
-    
-    elif data == "admin_mirrors":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        mirrors = get_mirror_bots()
-        if mirrors:
-            mirrors_text = "🤖 <b>Все зеркала:</b>\n\n"
-            for i, m in enumerate(mirrors, 1):
-                status = "🟢" if m[1] in active_bots else "🔴"
-                mirrors_text += f"{i}. {status} <b>{m[3]}</b>\n   Владелец: <code>{m[2]}</code>\n   Создан: {m[4]}\n\n"
-        else:
-            mirrors_text = "🤖 Зеркал нет"
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id, mirrors_text, reply_markup=create_back_keyboard("admin_panel"))
-    
-    elif data.startswith("page_"):
-        parts = data.split("_")
-        query_id = parts[1]
-        page_id = int(parts[2])
-        if query_id in cash_reports and 0 <= page_id < len(cash_reports[query_id]):
-            report = cash_reports[query_id]
-            markup = create_inline_keyboard(query_id, page_id, len(report))
-            await safe_edit_message(bot_instance, chat_id, message_id, report[page_id], reply_markup=markup)
-        await safe_answer_callback(callback)
-    
-    elif data == "current_page":
-        await safe_answer_callback(callback, "Текущая страница")
-    
-    elif data == "knowledge_base_menu":
-        knowledge_list = get_all_knowledge()
-        if knowledge_list:
-            await safe_delete_message(bot_instance, chat_id, message_id)
-            await safe_send_message(bot_instance, chat_id,
-                f"📚 <b>База знаний</b>\n\n"
-                f"Доступно записей: {len(knowledge_list)}\n\n"
-                "Выберите статью:",
-                reply_markup=create_knowledge_keyboard(knowledge_list))
-        else:
-            await safe_answer_callback(callback, "📚 База знаний пуста")
-    
-    elif data.startswith("kb_view_"):
-        kb_id = int(data.replace("kb_view_", ""))
-        kb = get_knowledge_by_id(kb_id)
-        if kb:
-            content = kb[2]
-            if len(content) > 4000:
-                content = content[:4000] + "\n\n⚠️ <i>Текст обрезан</i>"
-            await safe_delete_message(bot_instance, chat_id, message_id)
-            await safe_send_message(bot_instance, chat_id,
-                f"📄 <b>{kb[1]}</b>\n\n{content}",
-                reply_markup=create_back_keyboard("knowledge_base_menu"))
-        else:
-            await safe_answer_callback(callback, "❌ Запись не найдена")
-    
-    elif data == "admin_knowledge":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id,
-            "📚 <b>Управление базой знаний</b>\n\n"
-            "Добавляйте статьи и справочную информацию",
-            reply_markup=create_admin_knowledge_keyboard())
-    
-    elif data == "kb_add":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        await safe_delete_message(bot_instance, chat_id, message_id)
-        await safe_send_message(bot_instance, chat_id,
-            "➕ <b>Добавление в базу знаний</b>\n\n"
-            "Отправьте название статьи:",
-            reply_markup=create_back_keyboard("admin_knowledge"))
-        user_states[user_id] = {"kb_title": None}
-    
-    elif data == "kb_list":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        knowledge_list = get_all_knowledge()
-        if knowledge_list:
-            kb_text = "📋 <b>Список статей:</b>\n\n"
-            for i, kb in enumerate(knowledge_list[:20], 1):
-                kb_text += f"{i}. <b>{kb[1]}</b>\n   <i>Создано: {kb[3]}</i>\n\n"
-            await safe_delete_message(bot_instance, chat_id, message_id)
-            await safe_send_message(bot_instance, chat_id, kb_text,
-                reply_markup=create_back_keyboard("admin_knowledge"))
-        else:
-            await safe_answer_callback(callback, "📚 База знаний пуста")
-    
-    elif data == "kb_delete":
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        knowledge_list = get_all_knowledge()
-        try:
-            if knowledge_list:
+        elif data.startswith("tool_"):
+            tool_name = data.replace("tool_", "")
+            tool_prompts = {
+                "whois": ("🔎 <b>WHOIS запрос</b>\n\nВведите домен:\n<i>Пример: example.com</i>", "whois"),
+                "subdomains": ("🌐 <b>Поиск поддоменов</b>\n\nВведите домен:\n<i>Пример: example.com</i>", "subdomains"),
+                "dns": ("📡 <b>DNS записи</b>\n\nВведите домен:\n<i>Пример: example.com</i>", "dns"),
+                "reverse_dns": ("🔄 <b>Обратный DNS</b>\n\nВведите IP адрес:\n<i>Пример: 8.8.8.8</i>", "reverse_dns"),
+                "site_relations": ("🔗 <b>Внешние ссылки</b>\n\nВведите URL:\n<i>Пример: example.com</i>", "site_relations"),
+                "availability": ("📶 <b>Проверка доступности</b>\n\nВведите URL:\n<i>Пример: example.com</i>", "availability"),
+                "content": ("📄 <b>Контент сайта</b>\n\nВведите URL:\n<i>Пример: example.com</i>", "content"),
+                "server": ("🖥️ <b>Серверное ПО</b>\n\nВведите URL:\n<i>Пример: example.com</i>", "server"),
+                "password": ("🔐 <b>Генератор паролей</b>\n\nВведите длину (8-64):\n<i>По умолчанию: 16</i>", "password"),
+                "hash": ("🔒 <b>Хеширование</b>\n\nВведите текст для хеширования:", "hash"),
+                "email": ("📧 <b>Валидация Email</b>\n\nВведите email адрес:", "email"),
+                "phone": ("📱 <b>Анализ телефона</b>\n\nВведите номер телефона:", "phone"),
+                "ip_geo": ("🌍 <b>IP Geolocation</b>\n\nВведите IP адрес:\n<i>Пример: 8.8.8.8</i>", "ip_geo"),
+                "port_scan": ("🔍 <b>Port Scanner</b>\n\nВведите хост и порты:\n<i>Пример: example.com 80,443</i>", "port_scan"),
+                "ssl": ("🔐 <b>SSL Info</b>\n\nВведите домен:\n<i>Пример: example.com</i>", "ssl")
+            }
+            
+            if tool_name in tool_prompts:
+                prompt, state_name = tool_prompts[tool_name]
                 await safe_delete_message(bot_instance, chat_id, message_id)
-                await safe_send_message(
-                    bot_instance, 
-                    chat_id,
-                    "🗑️ <b>Удаление статьи</b>\n\nВыберите статью для удаления:",
-                    reply_markup=create_knowledge_delete_keyboard(knowledge_list)
+                await safe_send_message(bot_instance, chat_id, prompt, reply_markup=create_back_keyboard("tools_menu"))
+                user_states[user_id] = {"tool": state_name}
+            await safe_answer_callback(callback)
+        
+        elif data == "dorking_menu":
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id,
+                "🕵️ <b>Dorking поиск</b>\n\n"
+                "Поиск информации через поисковые системы\n\n"
+                "Выберите тип поиска:",
+                reply_markup=create_dorking_keyboard())
+        
+        elif data.startswith("dork_"):
+            dork_type = data.replace("dork_", "")
+            dork_prompts = {
+                "username": ("👤 <b>Поиск по никнейму</b>\n\nВведите никнейм:", "username"),
+                "email": ("📧 <b>Поиск по email</b>\n\nВведите email:", "email"),
+                "phone": ("📱 <b>Поиск по телефону</b>\n\nВведите номер:", "phone"),
+                "id": ("🆔 <b>Поиск по ID</b>\n\nВведите ID:", "id"),
+                "domain": ("🌐 <b>Поиск по домену</b>\n\nВведите домен:", "domain"),
+                "universal": ("🔍 <b>Универсальный поиск</b>\n\nВведите запрос:", "universal")
+            }
+            
+            if dork_type in dork_prompts:
+                prompt, state_name = dork_prompts[dork_type]
+                await safe_delete_message(bot_instance, chat_id, message_id)
+                await safe_send_message(bot_instance, chat_id, prompt, reply_markup=create_back_keyboard("dorking_menu"))
+                user_states[user_id] = {"dorking": state_name}
+            await safe_answer_callback(callback)
+        
+        elif data == "profile_menu":
+            user_stats = get_user_stats(user_id)
+            stats_text = "👤 <b>Ваш профиль</b>\n\n"
+            if user_stats:
+                stats_text += (
+                    f"🆔 <b>ID:</b> <code>{user_stats[0]}</code>\n"
+                    f"👤 <b>Имя:</b> {user_stats[2]}\n"
+                    f"📅 <b>Регистрация:</b> {user_stats[4]}\n"
+                    f"📊 <b>Запросов:</b> {user_stats[5]}"
                 )
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, stats_text, reply_markup=create_profile_keyboard(user_id))
+        
+        elif data == "my_stats":
+            user_stats = get_user_stats(user_id)
+            stats_text = "📊 <b>Ваша статистика</b>\n\n"
+            if user_stats:
+                stats_text += (
+                    f"📅 <b>Дата регистрации:</b> {user_stats[4]}\n"
+                    f"📊 <b>Всего запросов:</b> {user_stats[5]}\n"
+                    f"👑 <b>Статус:</b> {'Администратор' if is_admin(user_id) else 'Пользователь'}"
+                )
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, stats_text, reply_markup=create_back_keyboard("profile_menu"))
+        
+        elif data == "mirrors_menu":
+            if is_mirror:
+                await safe_answer_callback(callback, "Доступно только в основном боте")
+                return
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, 
+                "🤖 <b>Управление зеркалами</b>\n\nСоздавайте копии бота с вашим токеном", 
+                reply_markup=create_mirrors_keyboard())
+        
+        elif data == "create_mirror":
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id,
+                "🤖 <b>Создание зеркала</b>\n\n"
+                "<b>Инструкция:</b>\n"
+                "1. Перейдите к @BotFather\n"
+                "2. Создайте нового бота (/newbot)\n"
+                "3. Скопируйте токен\n"
+                "4. Отправьте команду:\n\n"
+                "<code>/mirror ваш_токен</code>",
+                reply_markup=create_back_keyboard("mirrors_menu"))
+        
+        elif data == "my_mirrors":
+            mirrors = get_mirror_bots(user_id)
+            if mirrors:
+                mirrors_text = "📋 <b>Ваши зеркала:</b>\n\n"
+                for i, mirror in enumerate(mirrors, 1):
+                    status = "🟢 Активно" if mirror[1] in active_bots else "🔴 Остановлено"
+                    mirrors_text += f"{i}. <b>{mirror[3]}</b> {status}\n   <i>Создан: {mirror[4]}</i>\n\n"
             else:
+                mirrors_text = "📋 У вас пока нет зеркал\n\nИспользуйте /mirror для создания"
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, mirrors_text, reply_markup=create_back_keyboard("mirrors_menu"))
+        
+        elif data == "delete_mirror":
+            mirrors = get_mirror_bots(user_id)
+            if mirrors:
                 await safe_delete_message(bot_instance, chat_id, message_id)
-                await safe_send_message(
-                    bot_instance, 
-                    chat_id,
-                    "📚 База знаний пуста",
-                    reply_markup=create_back_keyboard("admin_knowledge")
-                )
-        except Exception as e:
-            logger.error(f"Ошибка обработки callback {data}: {e}", exc_info=True)
-            try:
-                await safe_answer_callback(callback, "❌ Произошла ошибка")
-            except Exception as reply_error:
-                logger.error(f"Не удалось отправить сообщение об ошибке: {reply_error}")
-    
-    elif data.startswith("kb_del_"):
-        if not is_admin(user_id):
-            await safe_answer_callback(callback, "⛔ Нет доступа")
-            return
-        kb_id = int(data.replace("kb_del_", ""))
-        if delete_knowledge(kb_id):
-            await safe_answer_callback(callback, "✅ Статья удалена")
+                await safe_send_message(bot_instance, chat_id, 
+                    "🗑️ <b>Удаление зеркала</b>\n\nВыберите зеркало для удаления:", 
+                    reply_markup=create_mirror_delete_keyboard(mirrors))
+            else:
+                await safe_answer_callback(callback, "У вас нет зеркал")
+        
+        elif data.startswith("delete_mirror_"):
+            token = data.replace("delete_mirror_", "")
+            if remove_mirror_bot(token):
+                await safe_answer_callback(callback, "✅ Зеркало удалено")
+                await safe_delete_message(bot_instance, chat_id, message_id)
+                await safe_send_message(bot_instance, chat_id, 
+                    "✅ <b>Зеркало успешно удалено</b>", 
+                    reply_markup=create_back_keyboard("mirrors_menu"))
+            else:
+                await safe_answer_callback(callback, "❌ Ошибка удаления")
+        
+        elif data == "mirrors_help":
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id,
+                "ℹ️ <b>Помощь по зеркалам</b>\n\n"
+                "<b>Что такое зеркало?</b>\n"
+                "Это копия бота с вашим токеном\n\n"
+                "<b>Как создать:</b>\n"
+                "1. Получите токен от @BotFather\n"
+                "2. Используйте /mirror токен\n"
+                "3. Зеркало запустится автоматически\n\n"
+                "<b>Преимущества:</b>\n"
+                "• Собственный бот\n"
+                "• Полный функционал\n"
+                "• Независимая работа",
+                reply_markup=create_back_keyboard("mirrors_menu"))
+        
+        elif data == "help_menu":
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id,
+                "🆘 <b>Помощь</b>\n\n"
+                "<b>Основные команды:</b>\n"
+                "/start - главное меню\n"
+                "/tools - инструменты\n"
+                "/mirror - создать зеркало\n"
+                "/profile - профиль\n"
+                "/help - помощь\n\n"
+                "<b>Возможности:</b>\n"
+                "🔍 Поиск утечек данных\n"
+                "🛠️ OSINT инструменты (13 инструментов)\n"
+                "📚 База знаний\n"
+                "🕵️ Dorking поиск\n"
+                "🤖 Создание зеркал\n\n"
+                f"🌐 <a href='{WEBSITE_URL}'>Наш сайт</a>",
+                reply_markup=create_back_keyboard())
+        
+        elif data == "admin_panel":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, 
+                "👑 <b>Админ панель</b>\n\nУправление ботом", 
+                reply_markup=create_admin_keyboard())
+        
+        elif data == "admin_stats":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            users = get_all_users()
+            total_requests = sum(u[5] for u in users)
+            mirrors = get_mirror_bots()
+            channels = get_active_channels()
+            
+            stats_text = (
+                "📊 <b>Статистика бота</b>\n\n"
+                f"👥 <b>Пользователей:</b> {len(users)}\n"
+                f"📊 <b>Запросов:</b> {total_requests}\n"
+                f"🤖 <b>Зеркал:</b> {len(mirrors)} (активных: {len(active_bots)})\n"
+                f"📢 <b>Каналов:</b> {len(channels)}"
+            )
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, stats_text, reply_markup=create_back_keyboard("admin_panel"))
+        
+        elif data == "admin_users":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            users = get_all_users()
+            users_text = "👥 <b>Пользователи (топ 20):</b>\n\n"
+            for i, u in enumerate(users[:20], 1):
+                username = f"@{u[1]}" if u[1] else "Без ника"
+                users_text += f"{i}. {u[2]} ({username}) - {u[5]} запросов\n"
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, users_text, reply_markup=create_back_keyboard("admin_panel"))
+        
+        elif data == "admin_channels":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, 
+                "📢 <b>Управление каналами</b>\n\n"
+                "Для добавления канала отправьте:\n"
+                "<code>ID|Название|URL</code>\n\n"
+                "<i>Пример:</i>\n"
+                "<code>@channel|Мой канал|https://t.me/channel</code>", 
+                reply_markup=create_channels_keyboard())
+        
+        elif data == "channel_list":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            channels = get_active_channels()
+            if channels:
+                channels_text = "📋 <b>Список каналов:</b>\n\n"
+                for i, ch in enumerate(channels, 1):
+                    channels_text += f"{i}. <b>{ch[1]}</b>\n   ID: <code>{ch[0]}</code>\n   <a href='{ch[2]}'>Ссылка</a>\n\n"
+            else:
+                channels_text = "📋 Каналов нет"
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, channels_text, reply_markup=create_back_keyboard("admin_channels"))
+        
+        elif data == "admin_mirrors":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            mirrors = get_mirror_bots()
+            if mirrors:
+                mirrors_text = "🤖 <b>Все зеркала:</b>\n\n"
+                for i, m in enumerate(mirrors, 1):
+                    status = "🟢" if m[1] in active_bots else "🔴"
+                    mirrors_text += f"{i}. {status} <b>{m[3]}</b>\n   Владелец: <code>{m[2]}</code>\n   Создан: {m[4]}\n\n"
+            else:
+                mirrors_text = "🤖 Зеркал нет"
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id, mirrors_text, reply_markup=create_back_keyboard("admin_panel"))
+        
+        elif data.startswith("page_"):
+            parts = data.split("_")
+            query_id = parts[1]
+            page_id = int(parts[2])
+            if query_id in cash_reports and 0 <= page_id < len(cash_reports[query_id]):
+                report = cash_reports[query_id]
+                markup = create_inline_keyboard(query_id, page_id, len(report))
+                await safe_edit_message(bot_instance, chat_id, message_id, report[page_id], reply_markup=markup)
+            await safe_answer_callback(callback)
+        
+        elif data == "current_page":
+            await safe_answer_callback(callback, "Текущая страница")
+        
+        elif data == "knowledge_base_menu":
             knowledge_list = get_all_knowledge()
             if knowledge_list:
-                await safe_edit_message(bot_instance, chat_id, message_id,
+                await safe_delete_message(bot_instance, chat_id, message_id)
+                await safe_send_message(bot_instance, chat_id,
+                    f"📚 <b>База знаний</b>\n\n"
+                    f"Доступно записей: {len(knowledge_list)}\n\n"
+                    "Выберите статью:",
+                    reply_markup=create_knowledge_keyboard(knowledge_list))
+            else:
+                await safe_answer_callback(callback, "📚 База знаний пуста")
+        
+        elif data.startswith("kb_view_"):
+            kb_id = int(data.replace("kb_view_", ""))
+            kb = get_knowledge_by_id(kb_id)
+            if kb:
+                content = kb[2]
+                if len(content) > 4000:
+                    content = content[:4000] + "\n\n⚠️ <i>Текст обрезан</i>"
+                await safe_delete_message(bot_instance, chat_id, message_id)
+                await safe_send_message(bot_instance, chat_id,
+                    f"📄 <b>{kb[1]}</b>\n\n{content}",
+                    reply_markup=create_back_keyboard("knowledge_base_menu"))
+            else:
+                await safe_answer_callback(callback, "❌ Запись не найдена")
+        
+        elif data == "admin_knowledge":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id,
+                "📚 <b>Управление базой знаний</b>\n\n"
+                "Добавляйте статьи и справочную информацию",
+                reply_markup=create_admin_knowledge_keyboard())
+        
+        elif data == "kb_add":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            await safe_delete_message(bot_instance, chat_id, message_id)
+            await safe_send_message(bot_instance, chat_id,
+                "➕ <b>Добавление в базу знаний</b>\n\n"
+                "Отправьте название статьи:",
+                reply_markup=create_back_keyboard("admin_knowledge"))
+            user_states[user_id] = {"kb_title": None}
+        
+        elif data == "kb_list":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            knowledge_list = get_all_knowledge()
+            if knowledge_list:
+                kb_text = "📋 <b>Список статей:</b>\n\n"
+                for i, kb in enumerate(knowledge_list[:20], 1):
+                    kb_text += f"{i}. <b>{kb[1]}</b>\n   <i>Создано: {kb[3]}</i>\n\n"
+                await safe_delete_message(bot_instance, chat_id, message_id)
+                await safe_send_message(bot_instance, chat_id, kb_text,
+                    reply_markup=create_back_keyboard("admin_knowledge"))
+            else:
+                await safe_answer_callback(callback, "📚 База знаний пуста")
+        
+        elif data == "kb_delete":
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            knowledge_list = get_all_knowledge()
+            if knowledge_list:
+                await safe_delete_message(bot_instance, chat_id, message_id)
+                await safe_send_message(bot_instance, chat_id,
                     "🗑️ <b>Удаление статьи</b>\n\nВыберите статью для удаления:",
                     reply_markup=create_knowledge_delete_keyboard(knowledge_list))
             else:
-                await safe_delete_message(bot_instance, chat_id, message_id)
-                await safe_send_message(bot_instance, chat_id,
-                    "📚 База знаний пуста",
-                    reply_markup=create_back_keyboard("admin_knowledge"))
+                await safe_answer_callback(callback, "📚 База знаний пуста")
+        
+        elif data.startswith("kb_del_"):
+            if not is_admin(user_id):
+                await safe_answer_callback(callback, "⛔ Нет доступа")
+                return
+            kb_id = int(data.replace("kb_del_", ""))
+            kb = get_knowledge_by_id(kb_id)
+            if kb and delete_knowledge(kb_id):
+                await safe_answer_callback(callback, "✅ Статья удалена")
+                knowledge_list = get_all_knowledge()
+                if knowledge_list:
+                    await safe_edit_message(bot_instance, chat_id, message_id,
+                        "🗑️ <b>Удаление статьи</b>\n\nВыберите статью для удаления:",
+                        reply_markup=create_knowledge_delete_keyboard(knowledge_list))
+                else:
+                    await safe_delete_message(bot_instance, chat_id, message_id)
+                    await safe_send_message(bot_instance, chat_id,
+                        "📚 База знаний пуста",
+                        reply_markup=create_back_keyboard("admin_knowledge"))
+            else:
+                await safe_answer_callback(callback, "❌ Ошибка удаления")
+        
         else:
-            await safe_answer_callback(callback, "❌ Ошибка удаления")
+            await safe_answer_callback(callback, "⚙️ В разработке")
     
-    elif data.startswith("channel_remove"):
-        await safe_answer_callback(callback, "Для удаления отправьте ID канала")
-    
-    elif data.startswith("channel_add"):
-        await safe_answer_callback(callback, "Отправьте канал в формате: ID|Название|URL")
-    
-    else:
-        await safe_answer_callback(callback, "Неизвестная команда")
+    except Exception as e:
+        logger.error(f"Ошибка callback {data}: {e}")
+        await safe_answer_callback(callback, "❌ Ошибка")
 
 # ========== ОСНОВНОЙ БОТ ==========
 
@@ -1925,51 +1651,35 @@ async def main():
         username = message.from_user.username
         first_name = message.from_user.first_name or "Пользователь"
         last_name = message.from_user.last_name
+        add_user(user_id, username, first_name, last_name)
         
-        try:
-            add_user(user_id, username, first_name, last_name)
-        except Exception as e:
-            logger.error(f"Ошибка добавления пользователя {user_id}: {e}")
-        
-        try:
-            subscribed, not_subscribed = await check_user_subscription(bot, user_id)
-            if not subscribed:
-                keyboard = create_subscription_keyboard(not_subscribed)
-                await safe_send_message(
-                    bot, 
-                    user_id, 
-                    f"👋 <b>Добро пожаловать, {first_name}!</b>\n\n"
-                    "📢 Для использования бота подпишитесь на каналы:", 
-                    reply_markup=keyboard
-                )
-                return
-        except Exception as e:
-            logger.error(f"Ошибка проверки подписки для {user_id}: {e}")
-            await safe_send_message(
-                bot, 
-                user_id,
-                "❌ Ошибка проверки подписки. Попробуйте позже."
-            )
+        subscribed, not_subscribed = await check_user_subscription(bot, user_id)
+        if not subscribed:
+            keyboard = create_subscription_keyboard(not_subscribed)
+            await safe_send_message(bot, user_id, 
+                f"👋 <b>Добро пожаловать, {first_name}!</b>\n\n"
+                "📢 Для использования бота подпишитесь на каналы:", 
+                reply_markup=keyboard)
             return
         
+        photo_path = 'start.png'
         caption = (
             f"👋 <b>Добро пожаловать, {first_name}!</b>\n\n"
             f"🌐 {WEBSITE_URL}\n\n"
             "🔍 <b>Возможности бота:</b>\n"
-            "• Поиск утечек (2 API)\n"
-            "• 14 OSINT инструментов\n"
-            "• Dorking поиск (10 типов)\n"
+            "• Поиск утечек данных\n"
+            "• 13 OSINT инструментов\n"
+            "• Dorking поиск\n"
             "• База знаний\n"
-            "• Создание зеркал\n"
-            "• Сохранение отчетов\n\n"
+            "• Создание зеркал\n\n"
             "Выберите действие:"
         )
         
-        try:
+        if os.path.exists(photo_path):
+            await safe_send_photo(bot, user_id, photo_path, caption, reply_markup=create_start_keyboard())
+        else:
             await safe_send_message(bot, user_id, caption, reply_markup=create_start_keyboard())
-            await state.clear()
-        except Exception as e:
-            logger.error(f"Ошибка отправки приветствия пользователю {user_id}: {e}")
+        await state.clear()
     
     @dp.message(Command("mirror"))
     async def mirror_command(message: types.Message, state: FSMContext):
@@ -1991,7 +1701,6 @@ async def main():
             return
         
         msg = await message.answer("⏳ Создаю зеркало...")
-        test_bot = None
         
         try:
             test_bot = Bot(token=bot_token)
@@ -2014,25 +1723,14 @@ async def main():
                     reply_markup=create_back_keyboard("mirrors_menu")
                 )
             
-        except InvalidToken:
+            await test_bot.session.close()
+        except Exception as e:
+            logger.error(f"Ошибка создания зеркала: {e}")
             await msg.edit_text(
-                "❌ <b>Неверный токен бота!</b>\n\n"
+                "❌ <b>Ошибка!</b>\n\n"
                 "Проверьте правильность токена",
                 reply_markup=create_back_keyboard("mirrors_menu")
             )
-        except Exception as e:
-            logger.error(f"Ошибка создания зеркала: {e}", exc_info=True)
-            await msg.edit_text(
-                "❌ <b>Ошибка создания зеркала!</b>\n\n"
-                "Попробуйте позже или проверьте токен",
-                reply_markup=create_back_keyboard("mirrors_menu")
-            )
-        finally:
-            if test_bot:
-                try:
-                    await test_bot.session.close()
-                except:
-                    pass
     
     @dp.message(Command("admin"))
     async def admin_command(message: types.Message):
@@ -2040,43 +1738,26 @@ async def main():
         if not is_admin(user_id):
             await message.answer("⛔ Нет доступа")
             return
-        
-        try:
-            await safe_send_message(bot, user_id, "👑 Админ панель", reply_markup=create_admin_keyboard())
-        except Exception as e:
-            logger.error(f"Ошибка отправки админ панели пользователю {user_id}: {e}")
+        await safe_send_message(bot, user_id, "👑 Админ панель", reply_markup=create_admin_keyboard())
     
     @dp.message(Command("tools"))
     async def tools_command(message: types.Message):
-        try:
-            await safe_send_message(
-                bot, 
-                message.chat.id, 
-                "🛠️ <b>Инструменты OSINT</b>\n\n<b>Доступно 14 инструментов</b>\n\nВыберите инструмент:", 
-                reply_markup=create_tools_keyboard()
-            )
-        except Exception as e:
-            logger.error(f"Ошибка отправки меню инструментов: {e}")
+        await safe_send_message(bot, message.chat.id, 
+            "🛠️ <b>Инструменты OSINT</b>\n\n<b>Доступно 14 инструментов</b>\n\nВыберите инструмент:", 
+            reply_markup=create_tools_keyboard())
     
     @dp.message(Command("profile"))
     async def profile_command(message: types.Message):
         user_id = message.from_user.id
-        try:
-            user_stats = get_user_stats(user_id)
-            if user_stats:
-                stats_text = (
-                    "👤 <b>Ваш профиль</b>\n\n"
-                    f"🆔 <b>ID:</b> <code>{user_stats[0]}</code>\n"
-                    f"👤 <b>Имя:</b> {user_stats[2]}\n"
-                    f"📊 <b>Запросов:</b> {user_stats[5]}"
-                )
-            else:
-                stats_text = "👤 <b>Ваш профиль</b>\n\nПрофиль не найден"
-            
-            await safe_send_message(bot, user_id, stats_text, reply_markup=create_profile_keyboard(user_id))
-        except Exception as e:
-            logger.error(f"Ошибка получения профиля пользователя {user_id}: {e}")
-            await safe_send_message(bot, user_id, "❌ Ошибка загрузки профиля")
+        user_stats = get_user_stats(user_id)
+        stats_text = "👤 <b>Ваш профиль</b>\n\n"
+        if user_stats:
+            stats_text += (
+                f"🆔 <b>ID:</b> <code>{user_stats[0]}</code>\n"
+                f"👤 <b>Имя:</b> {user_stats[2]}\n"
+                f"📊 <b>Запросов:</b> {user_stats[5]}"
+            )
+        await safe_send_message(bot, user_id, stats_text, reply_markup=create_profile_keyboard(user_id))
     
     @dp.message(Command("help"))
     async def help_command(message: types.Message):
@@ -2090,21 +1771,11 @@ async def main():
             "/help - помощь\n\n"
             f"🌐 <a href='{WEBSITE_URL}'>Наш сайт</a>"
         )
-        try:
-            await safe_send_message(bot, message.chat.id, help_text, reply_markup=create_back_keyboard())
-        except Exception as e:
-            logger.error(f"Ошибка отправки справки: {e}")
+        await safe_send_message(bot, message.chat.id, help_text, reply_markup=create_back_keyboard())
     
     @dp.callback_query()
     async def callback_handler(callback: types.CallbackQuery, state: FSMContext):
-        try:
-            await handle_callback_logic(callback, bot)
-        except Exception as e:
-            logger.error(f"Необработанная ошибка в callback: {e}", exc_info=True)
-            try:
-                await callback.answer("❌ Произошла ошибка")
-            except:
-                pass
+        await handle_callback_logic(callback, bot)
     
     @dp.message()
     async def message_handler(message: types.Message, state: FSMContext):
@@ -2114,15 +1785,10 @@ async def main():
         if not text:
             return
         
-        try:
-            subscribed, not_subscribed = await check_user_subscription(bot, user_id)
-            if not subscribed:
-                keyboard = create_subscription_keyboard(not_subscribed)
-                await safe_send_message(bot, user_id, "📢 Подпишитесь на каналы!", reply_markup=keyboard)
-                return
-        except Exception as e:
-            logger.error(f"Ошибка проверки подписки в обработке сообщения {user_id}: {e}")
-            await safe_send_message(bot, user_id, "❌ Ошибка проверки подписки")
+        subscribed, not_subscribed = await check_user_subscription(bot, user_id)
+        if not subscribed:
+            keyboard = create_subscription_keyboard(not_subscribed)
+            await safe_send_message(bot, user_id, "📢 Подпишитесь на каналы!", reply_markup=keyboard)
             return
         
         if is_admin(user_id):
@@ -2130,47 +1796,47 @@ async def main():
                 try:
                     channel_id, channel_name, channel_url = [x.strip() for x in text.split("|")]
                     if add_channel(channel_id, channel_name, channel_url):
-                        await safe_send_message(
-                            bot, 
-                            user_id, 
+                        await safe_send_message(bot, user_id, 
                             f"✅ <b>Канал добавлен!</b>\n\n"
                             f"<b>Название:</b> {channel_name}\n"
                             f"<b>ID:</b> <code>{channel_id}</code>\n"
-                            f"<b>URL:</b> {channel_url}"
-                        )
+                            f"<b>URL:</b> {channel_url}")
                     else:
                         await safe_send_message(bot, user_id, "❌ Ошибка добавления канала")
                     return
                 except Exception as e:
-                    logger.error(f"Ошибка добавления канала админом {user_id}: {e}")
                     await safe_send_message(bot, user_id, f"❌ Ошибка: {str(e)}")
                     return
+            elif user_id in user_states and "kb_title" in user_states[user_id]:
+                # Обработка уже в handle_message_logic
+                pass
         
-        try:
-            await handle_message_logic(message, bot)
-        except Exception as e:
-            logger.error(f"Ошибка обработки сообщения от {user_id}: {e}", exc_info=True)
-            await safe_send_message(bot, user_id, "❌ Ошибка обработки запроса")
+        await handle_message_logic(message, bot)
     
     logger.info("🤖 Запуск polling основного бота...")
-    
-    try:
-        await dp.start_polling(bot, skip_updates=True)
-    except Exception as e:
-        logger.critical(f"Критическая ошибка в работе бота: {e}", exc_info=True)
-        raise
+    await dp.start_polling(bot, skip_updates=True)
 
 # ========== ЗАПУСК ==========
+
 if __name__ == "__main__":
     print("=" * 60)
-    print("🤖 ЗАПУСК БОТА POLARSEARCH v2.0")
+    print("🤖 ЗАПУСК БОТА POLARSEARCH")
     print("=" * 60)
+    
+    if not os.path.exists('start.png'):
+        print("📷 Создание изображения...")
+        try:
+            import PIL
+            asyncio.run(create_default_photo())
+        except:
+            print("⚠️ Pillow не установлен, создаю заглушку")
+            with open('start.png', 'w') as f:
+                f.write('Photo placeholder')
     
     try:
         init_database()
         print("✅ База данных инициализирована")
     except Exception as e:
-        logger.critical(f"Ошибка инициализации БД: {e}", exc_info=True)
         print(f"❌ Ошибка БД: {e}")
         exit(1)
     
@@ -2178,8 +1844,7 @@ if __name__ == "__main__":
         REQUIRED_CHANNELS = get_active_channels()
         print(f"✅ Загружено каналов: {len(REQUIRED_CHANNELS)}")
     except Exception as e:
-        logger.error(f"Ошибка загрузки каналов: {e}")
-        print(f"⚠️  Предупреждение загрузки каналов: {e}")
+        print(f"❌ Ошибка загрузки каналов: {e}")
     
     try:
         existing_mirrors = get_mirror_bots()
@@ -2188,17 +1853,14 @@ if __name__ == "__main__":
             try:
                 create_mirror_bot_instance(mirror[1], mirror[2], mirror[3])
                 print(f"✅ Запущено зеркало: {mirror[3]}")
-                time.sleep(1)
+                time.sleep(1)  # Задержка между запусками
             except Exception as e:
-                logger.error(f"Ошибка запуска зеркала {mirror[3]}: {e}")
                 print(f"❌ Ошибка запуска зеркала {mirror[3]}: {e}")
     except Exception as e:
-        logger.error(f"Ошибка загрузки зеркал: {e}")
-        print(f"⚠️  Предупреждение загрузки зеркал: {e}")
+        print(f"❌ Ошибка загрузки зеркал: {e}")
     
     print(f"👑 Администраторы: {ADMIN_IDS}")
     print(f"🌐 Сайт: {WEBSITE_URL}")
-    print(f"🔑 API: LeakOsint + DepSearch")
     print("=" * 60)
     print("✅ БОТ ЗАПУЩЕН И ГОТОВ К РАБОТЕ!")
     print("=" * 60)
@@ -2207,15 +1869,10 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n🛑 Бот остановлен пользователем")
-        logger.info("Бот остановлен пользователем")
+        # Остановка всех зеркал
         for token, task in mirror_tasks.items():
-            try:
-                task.cancel()
-            except:
-                pass
+            task.cancel()
     except Exception as e:
-        logger.critical(f"Критическая ошибка в основном цикле: {e}", exc_info=True)
         print(f"❌ Критическая ошибка: {e}")
         import traceback
         traceback.print_exc()
-        exit(1)
