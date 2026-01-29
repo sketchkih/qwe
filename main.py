@@ -33,7 +33,7 @@ except ModuleNotFoundError:
     exit(1)
 
 # ========== КОНФИГУРАЦИЯ ==========
-MAIN_BOT_TOKEN = "8249888150:AAGF9Q1IprTnFXpbS1vwzQnqwO20pfnmjcU"
+MAIN_BOT_TOKEN = "8512250857:AAG9IMIk-0soauWGDPWKKEPM-kZUipG1Ph4"
 LEAKOSINT_API_TOKEN = "7501355771:Tuq93eQf"
 LEAKOSINT_URL = "https://leakosintapi.com/"
 LANG = "ru"
